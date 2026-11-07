@@ -1,0 +1,18 @@
+{
+  "m6_ram_snapshot": {
+    "initial": {
+      "total_gb": 15.85,
+      "available_gb": 6.04,
+      "used_gb": 9.81,
+      "percent": 61.9
+    },
+    "final": {
+      "total_gb": 15.85,
+      "available_gb": 6.04,
+      "used_gb": 9.81,
+      "percent": 61.9
+    }
+  },
+  "m7_disk_usage_mb": 0.008,
+  "elapsed_seconds": 7.64
+}

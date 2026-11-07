@@ -1,0 +1,111 @@
+{
+  "m1_network": {
+    "test": "M1_NETWORK_EGRESS",
+    "tcp_public": {
+      "status": "CONNECTED",
+      "allowed": true
+    },
+    "udp_public": {
+      "status": "REPLIED",
+      "allowed": true,
+      "bytes": 44
+    },
+    "dns_resolve": {
+      "status": "RESOLVED",
+      "allowed": true,
+      "ips": [
+        "2404:6800:4007:83d::200e",
+        "142.250.67.46"
+      ]
+    },
+    "doh_https": {
+      "status": "BLOCKED",
+      "allowed": false,
+      "error": "<urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1010)>"
+    },
+    "lan_probe": {
+      "status": "BLOCKED",
+      "allowed": false,
+      "error": "timed out"
+    },
+    "local_host_probe": {
+      "11434": {
+        "status": "UNREACHABLE",
+        "allowed": false,
+        "error": "timed out"
+      },
+      "8000": {
+        "status": "UNREACHABLE",
+        "allowed": false,
+        "error": "timed out"
+      },
+      "5432": {
+        "status": "UNREACHABLE",
+        "allowed": false,
+        "error": "timed out"
+      },
+      "6379": {
+        "status": "UNREACHABLE",
+        "allowed": false,
+        "error": "timed out"
+      },
+      "8080": {
+        "status": "UNREACHABLE",
+        "allowed": false,
+        "error": "timed out"
+      }
+    },
+    "proxy_env": {
+      "proxy_env_present": false,
+      "variables": []
+    }
+  },
+  "m2_filesystem": {
+    "test": "M2_FILESYSTEM_CONFINEMENT",
+    "workspace_write": {
+      "allowed": true,
+      "error": null,
+      "verified": true
+    },
+    "workspace_read": {
+      "allowed": true,
+      "exists": true,
+      "bytes_read": 13,
+      "error": null
+    },
+    "at_c_11_core_db_read": {
+      "allowed": true,
+      "exists": true,
+      "bytes_read": 25,
+      "error": null
+    },
+    "at_c_11_core_db_write": {
+      "allowed": true,
+      "error": null,
+      "verified": true
+    },
+    "other_workspace_read": {
+      "allowed": true,
+      "exists": true,
+      "bytes_read": 17,
+      "error": null
+    },
+    "user_profile_read": {
+      "allowed": false,
+      "exists": true,
+      "bytes_read": 0,
+      "error": "PermissionError: [Errno 13] Permission denied: 'C:\\\\Users\\\\derik\\\\NTUSER.DAT'"
+    },
+    "system_binary_read": {
+      "allowed": true,
+      "exists": true,
+      "bytes_read": 64,
+      "error": null
+    },
+    "traversal_read": {
+      "allowed": false,
+      "exists": false,
+      "error": "FileNotFound"
+    }
+  }
+}

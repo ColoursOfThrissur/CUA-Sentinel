@@ -1,0 +1,4 @@
+{
+  "loopback_exemption_status": "FAILED_REQUIRES_ADMIN",
+  "error": "Command 'CheckNetIsolation.exe LoopbackExempt -a -p=\"S-1-15-2-1936846435-59667826-969529325-1588099046-1928137223-1678030340-4051080034\"' returned non-zero exit status 5."
+}
