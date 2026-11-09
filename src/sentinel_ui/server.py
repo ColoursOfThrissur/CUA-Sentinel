@@ -21,6 +21,8 @@ from sentinel_core.verification_gate import VerificationGate, VerificationResult
 from sentinel_adaptive.mistake_ledger import MistakeMemory
 from sentinel_adaptive.skill_bank import SkillBank
 from sentinel_broker.tool_registry import ToolRegistry
+from sentinel_broker.organs.sensory import register_sensory_organs
+from sentinel_broker.organs.motor import register_motor_organs
 from sentinel_adaptive.pilot_controller import AdaptivePilotController
 
 logger = logging.getLogger("SentinelServer")
@@ -44,6 +46,8 @@ verification_gate = VerificationGate(db)
 mistake_memory = MistakeMemory(db)
 skill_bank = SkillBank(db, config.storage.skills_dir)
 tool_registry = ToolRegistry()
+register_sensory_organs(tool_registry)
+register_motor_organs(tool_registry)
 pilot = AdaptivePilotController(state_machine, verification_gate, mistake_memory, skill_bank)
 
 
@@ -147,6 +151,11 @@ def list_mistakes():
 @app.get("/api/skills")
 def list_skills():
     return skill_bank.list_skills()
+
+
+@app.get("/api/tools")
+def list_tools():
+    return tool_registry.list_tools()
 
 
 @app.get("/api/side_effects")
