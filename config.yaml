@@ -1,0 +1,28 @@
+# Sentinel Autonomous Pilot Configuration
+system:
+  environment: "development"
+  log_level: "INFO"
+
+iteration_limits:
+  max_attempts: 3
+  attempt_timeout_sec: 25.0
+  kill_window_sec: 2.0
+
+resource_quotas:
+  memory_limit_mb: 100
+  cpu_rate_percent: 12.5
+  ram_floor_mb: 2500
+
+isolation:
+  use_appcontainer: true
+  staging_runtime_dir: "spikes/s1_isolation_win11/staging_runtime"
+  profile_prefix: "Sentinel.Attempt"
+
+storage:
+  db_path: "data/sentinel_core.db"
+  skills_dir: "skills"
+  workspaces_dir: "workspaces"
+
+policy:
+  allow_irreversible: false
+  fail_closed_pdp: true
