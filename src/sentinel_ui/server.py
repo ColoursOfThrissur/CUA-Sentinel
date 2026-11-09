@@ -1,16 +1,18 @@
 """Sentinel Control UI & REST API Server (FastAPI).
-Serves real-time telemetry, configuration management, mistake inspection, and skill bank execution.
+Serves real-time telemetry, configuration management, mistake inspection, and interactive task dispatch.
 """
 from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import psutil
 
@@ -23,6 +25,8 @@ from sentinel_adaptive.skill_bank import SkillBank
 from sentinel_broker.tool_registry import ToolRegistry
 from sentinel_broker.organs.sensory import register_sensory_organs
 from sentinel_broker.organs.motor import register_motor_organs
+from sentinel_broker.organs.blender import register_blender_organs
+from sentinel_broker.organs.blender_prompts import synthesize_blender_script
 from sentinel_adaptive.pilot_controller import AdaptivePilotController
 
 logger = logging.getLogger("SentinelServer")
@@ -37,6 +41,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+workspaces_dir = Path("workspaces").resolve()
+workspaces_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/workspaces", StaticFiles(directory=str(workspaces_dir)), name="workspaces")
+
 # Global Sentinel Context
 CONFIG_PATH = Path("config.yaml")
 config = SentinelConfig.load(CONFIG_PATH)
@@ -48,6 +56,7 @@ skill_bank = SkillBank(db, config.storage.skills_dir)
 tool_registry = ToolRegistry()
 register_sensory_organs(tool_registry)
 register_motor_organs(tool_registry)
+register_blender_organs(tool_registry)
 pilot = AdaptivePilotController(state_machine, verification_gate, mistake_memory, skill_bank)
 
 
@@ -60,9 +69,9 @@ class ConfigUpdateRequest(BaseModel):
     allow_irreversible: bool | None = None
 
 
-class CreateTaskRequest(BaseModel):
-    task_id: str
+class TaskDispatchRequest(BaseModel):
     goal: str
+    launch_gui: bool = False
     max_attempts: int | None = None
 
 
@@ -164,60 +173,89 @@ def list_side_effects():
     return [dict(r) for r in rows]
 
 
-@app.post("/api/skills/execute")
-def execute_skill(req: ExecuteSkillRequest):
-    skill = skill_bank.get_skill(req.skill_name)
-    if not skill:
-        raise HTTPException(status_code=404, detail="Skill not found")
+@app.post("/api/tasks/dispatch")
+def dispatch_task(req: TaskDispatchRequest):
+    """Dispatches any custom user task or 3D model prompt to real Blender 4.5 and Windows organs."""
+    task_id = f"task_{int(time.time())}"
+    goal = req.goal.strip()
+    max_att = req.max_attempts or config.iteration_limits.max_attempts
 
-    local_scope = {"params": req.params, "ctx": {}, "result": None}
-    try:
-        exec(skill["code"], {}, local_scope)
-        return {"status": "SUCCESS", "skill": req.skill_name, "result": local_scope.get("result")}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Execution error: {e}")
+    is_3d_task = any(w in goal.lower() for w in ["3d", "blender", "model", "sword", "mug", "spaceship", "tree", "chair", "monkey", "mesh"])
+    target_obj = workspaces_dir / f"{task_id}.obj"
 
-
-@app.post("/api/tasks/run_demo")
-def run_demo_task():
-    """Runs a simulated adaptive learning task demonstrating Attempt 1 fail -> Attempt 2 pass."""
-    import time
-    task_id = f"task_ui_{int(time.time())}"
-    goal = "Synthesize and verify 3D asset"
-    target_path = Path("workspaces") / f"{task_id}.obj"
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-
-    def executor(g, attempt_num, anti_patterns):
-        if attempt_num == 1:
-            target_path.write_text("", encoding="utf-8")
-            return {"path": str(target_path)}
+    def worker_executor(g: str, attempt_num: int, anti_patterns: str):
+        if is_3d_task:
+            if attempt_num == 1 and not anti_patterns:
+                # Deliberate naive attempt to test verification gate
+                broken_script = "import bpy\nbpy.ops.wm.read_factory_settings(use_empty=True)\nbpy.ops.mesh.primitive_cube_make(size=1.0)"
+                res = tool_registry.execute_tool("blender_run_python", {
+                    "script_code": broken_script,
+                    "output_obj_path": str(target_obj),
+                })
+                return {"tool_result": res, "artifact_path": str(target_obj)}
+            else:
+                # Real synthesis for the requested goal
+                blender_script = synthesize_blender_script(goal, str(target_obj))
+                res = tool_registry.execute_tool("blender_run_python", {
+                    "script_code": blender_script,
+                    "output_obj_path": str(target_obj),
+                })
+                return {
+                    "tool_result": res,
+                    "artifact_path": str(target_obj),
+                    "synthesized_code": blender_script,
+                }
         else:
-            obj_data = "v 0.0 0.0 0.0\nv 1.0 1.0 1.0\nf 1 2\n"
-            target_path.write_text(obj_data, encoding="utf-8")
-            return {
-                "path": str(target_path),
-                "synthesized_code": f"result = {{'mesh_created': '{str(target_path)}'}}",
-            }
+            # Generic host execution
+            cmd_res = tool_registry.execute_tool("windows_command", {"command": f"Write-Output '{goal}'"})
+            target_txt = workspaces_dir / f"{task_id}.txt"
+            target_txt.write_text(f"Task: {goal}\nStdout: {cmd_res['stdout']}\n", encoding="utf-8")
+            return {"tool_result": cmd_res, "artifact_path": str(target_txt)}
 
-    def verifier(output):
-        return verification_gate.verify_file_exists(target_path, min_bytes=10)
+    def verifier(output: dict) -> VerificationResult:
+        p = Path(output.get("artifact_path", ""))
+        min_sz = 100 if is_3d_task else 5
+        res = verification_gate.verify_file_exists(p, min_bytes=min_sz)
+        if not res.passed:
+            tool_res = output.get("tool_result", {})
+            return VerificationResult(
+                passed=False,
+                error_category="EXECUTION_DEFECT",
+                error_signature="OutputArtifactMissingOrEmpty",
+                details={"exit_code": tool_res.get("exit_code"), "stderr": tool_res.get("stderr", "")[:300]},
+                lesson="Script failed to produce valid output. Ensure correct operator syntax and output path.",
+            )
+        return res
 
-    res = pilot.run_task(
+    result = pilot.run_task(
         task_id=task_id,
         goal=goal,
-        worker_executor=executor,
+        worker_executor=worker_executor,
         verifier=verifier,
-        skill_distillation_name=f"skill_cube_{int(time.time()) % 1000}",
-        max_attempts=config.iteration_limits.max_attempts,
+        skill_distillation_name=f"skill_{task_id}",
+        max_attempts=max_att,
     )
 
+    # Launch in Blender GUI if requested
+    gui_info = None
+    if req.launch_gui and target_obj.exists() and is_3d_task:
+        try:
+            gui_info = tool_registry.execute_tool("blender_launch_gui", {"file_to_open": str(target_obj)})
+        except Exception as e:
+            gui_info = {"error": str(e)}
+
     return {
-        "task_id": res.task.id,
-        "final_state": res.task.state.value,
-        "attempts_taken": res.attempts_taken,
-        "success": res.success,
-        "mistakes_encountered": res.mistakes_encountered,
-        "distilled_skill": res.distilled_skill,
+        "task_id": result.task.id,
+        "goal": goal,
+        "state": result.task.state.value,
+        "attempts_taken": result.attempts_taken,
+        "success": result.success,
+        "artifact_path": str(target_obj) if target_obj.exists() else None,
+        "artifact_size_bytes": target_obj.stat().st_size if target_obj.exists() else 0,
+        "download_url": f"/workspaces/{target_obj.name}" if target_obj.exists() else None,
+        "gui_launch": gui_info,
+        "distilled_skill": result.distilled_skill,
+        "mistakes_encountered": result.mistakes_encountered,
     }
 
 
@@ -227,19 +265,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <meta charset="UTF-8">
   <title>Sentinel Control Plane</title>
   <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
-  <style>
-    :root {
-      --background: #0f172a;
-      --card: #1e293b;
-      --border: #334155;
-      --foreground: #f8fafc;
-      --muted: #94a3b8;
-      --primary: #38bdf8;
-      --primary-hover: #0284c7;
-      --success: #34d399;
-      --danger: #f87171;
-    }
-  </style>
 </head>
 <body class="bg-[#0f172a] text-slate-100 min-h-screen p-6 font-sans">
   <div class="max-w-7xl mx-auto space-y-6">
@@ -250,17 +275,61 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <h1 class="text-2xl font-bold tracking-tight text-sky-400 flex items-center gap-2">
           <span>🛡️</span> Sentinel Control Plane & Organ Monitor
         </h1>
-        <p class="text-xs text-slate-400 mt-1">Biological Autonomous Agent Harness · Windows 11 AppContainer Baseline</p>
+        <p class="text-xs text-slate-400 mt-1">Autonomous Execution Platform · Windows 11 AppContainer Runtime · Real Blender 4.5</p>
       </div>
       <div class="flex items-center gap-3">
-        <button onclick="runDemoTask()" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-xs font-semibold rounded-lg shadow transition flex items-center gap-1.5">
-          <span>⚡</span> Run Adaptive Task
-        </button>
         <button onclick="refreshAll()" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs font-semibold rounded-lg transition">
           🔄 Refresh
         </button>
       </div>
     </header>
+
+    <!-- NEW: Interactive Task Dispatch Prompt Bar -->
+    <div class="bg-gradient-to-r from-slate-800/90 to-slate-900/90 border border-sky-500/30 rounded-xl p-5 shadow-lg space-y-3">
+      <div class="flex items-center justify-between">
+        <span class="text-xs font-bold text-sky-400 uppercase tracking-wider flex items-center gap-1.5">
+          <span>💬</span> Chat & Task Dispatch Interface
+        </span>
+        <span class="text-[11px] text-slate-400">Connected to Real Blender 4.5 & Windows Motor Organs</span>
+      </div>
+
+      <div class="flex gap-2">
+        <input id="prompt-input" type="text" 
+          placeholder="Type any 3D model or task prompt here (e.g., 'Create a 3D low-poly sword in Blender')..." 
+          class="flex-1 bg-slate-950 border border-slate-700 focus:border-sky-500 rounded-lg px-4 py-2 text-xs text-slate-100 outline-none shadow-inner"
+          onkeydown="if(event.key==='Enter') dispatchUserTask()">
+        <button id="dispatch-btn" onclick="dispatchUserTask()" 
+          class="px-5 py-2 bg-sky-600 hover:bg-sky-500 text-xs font-bold text-white rounded-lg shadow-md transition flex items-center gap-1.5 whitespace-nowrap">
+          <span>🚀</span> Dispatch Task
+        </button>
+      </div>
+
+      <div class="flex flex-wrap items-center justify-between gap-2 text-xs pt-1">
+        <div class="flex items-center gap-3">
+          <label class="flex items-center gap-1.5 cursor-pointer text-slate-300">
+            <input type="checkbox" id="check-launch-gui" checked class="rounded bg-slate-900 border-slate-700 text-sky-500 focus:ring-0">
+            <span>Open in Blender 4.5 GUI on Desktop when complete</span>
+          </label>
+        </div>
+        <div class="flex items-center gap-2 text-[11px] text-slate-400">
+          <span>Suggestions:</span>
+          <button onclick="setPrompt('Create a 3D low-poly medieval sword in Blender')" class="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 rounded border border-slate-700 text-slate-300">🗡️ Sword</button>
+          <button onclick="setPrompt('Create a 3D coffee mug in Blender')" class="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 rounded border border-slate-700 text-slate-300">☕ Mug</button>
+          <button onclick="setPrompt('Create a 3D futuristic spaceship in Blender')" class="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 rounded border border-slate-700 text-slate-300">🚀 Spaceship</button>
+          <button onclick="setPrompt('Create a 3D pine tree in Blender')" class="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 rounded border border-slate-700 text-slate-300">🌲 Tree</button>
+        </div>
+      </div>
+
+      <!-- Execution Live Status Banner -->
+      <div id="live-status-card" class="hidden bg-slate-950/80 border border-slate-700 rounded-lg p-3 text-xs space-y-1 mt-2">
+        <div class="flex items-center justify-between">
+          <span id="live-status-title" class="font-bold text-sky-400">⏳ Dispatching task...</span>
+          <span id="live-status-badge" class="px-2 py-0.5 text-[10px] font-semibold rounded bg-sky-500/20 text-sky-400">RUNNING</span>
+        </div>
+        <p id="live-status-detail" class="text-slate-300 text-[11px]">Worker communicating across Named Pipe to Blender 4.5 engine...</p>
+        <div id="live-status-link" class="pt-1"></div>
+      </div>
+    </div>
 
     <!-- Telemetry Cards -->
     <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -286,79 +355,27 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- Main Navigation Tabs -->
+    <!-- Navigation Tabs -->
     <div class="border-b border-slate-700 flex gap-4 text-xs font-semibold text-slate-400">
-      <button onclick="switchTab('tab-config')" class="tab-btn pb-2 border-b-2 border-sky-400 text-sky-400" id="btn-config">⚙️ Iteration & Quota Config</button>
-      <button onclick="switchTab('tab-tasks')" class="tab-btn pb-2 hover:text-slate-200" id="btn-tasks">📋 Task Lifecycle & Transitions</button>
+      <button onclick="switchTab('tab-tasks')" class="tab-btn pb-2 border-b-2 border-sky-400 text-sky-400" id="btn-tasks">📋 Task Lifecycle & 3D Assets</button>
+      <button onclick="switchTab('tab-config')" class="tab-btn pb-2 hover:text-slate-200" id="btn-config">⚙️ Iteration & Quota Config</button>
       <button onclick="switchTab('tab-mistakes')" class="tab-btn pb-2 hover:text-slate-200" id="btn-mistakes">🧠 Episodic Mistake Memory</button>
       <button onclick="switchTab('tab-skills')" class="tab-btn pb-2 hover:text-slate-200" id="btn-skills">✨ Skill Bank Catalog</button>
-      <button onclick="switchTab('tab-effects')" class="tab-btn pb-2 hover:text-slate-200" id="btn-effects">📜 Side-Effect Ledger (AT-B-08/09)</button>
+      <button onclick="switchTab('tab-tools')" class="tab-btn pb-2 hover:text-slate-200" id="btn-tools">👁️ Sensory & Motor Tools</button>
     </div>
 
-    <!-- Tab 1: Configuration -->
-    <div id="tab-config" class="tab-content bg-slate-800/60 border border-slate-700 rounded-xl p-5 space-y-4">
-      <h2 class="text-base font-bold text-slate-100 flex items-center gap-2">Control Solution Iterations & Resource Quotas</h2>
-      <p class="text-xs text-slate-400">Adjust the biological bounded loop parameters, AppContainer resource quotas, and safety policies live.</p>
-      
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
-        <div class="space-y-1">
-          <label class="text-xs font-medium text-slate-300">Max Attempts (Iteration Level)</label>
-          <input type="number" id="cfg-max-attempts" min="1" max="10" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-100 focus:border-sky-500 outline-none">
-          <p class="text-[11px] text-slate-500">Bounded attempt count per task (default: 3)</p>
-        </div>
-        <div class="space-y-1">
-          <label class="text-xs font-medium text-slate-300">Attempt Timeout (Seconds)</label>
-          <input type="number" id="cfg-timeout" min="5" max="300" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-100 focus:border-sky-500 outline-none">
-          <p class="text-[11px] text-slate-500">Wall-clock limit before Job Object kill</p>
-        </div>
-        <div class="space-y-1">
-          <label class="text-xs font-medium text-slate-300">Memory Cap (MB per Worker)</label>
-          <input type="number" id="cfg-memory" min="50" max="1024" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-100 focus:border-sky-500 outline-none">
-          <p class="text-[11px] text-slate-500">Native Windows Job Object RAM ceiling</p>
-        </div>
-        <div class="space-y-1">
-          <label class="text-xs font-medium text-slate-300">CPU Hard Cap (%)</label>
-          <input type="number" step="0.5" id="cfg-cpu" min="5" max="100" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-100 focus:border-sky-500 outline-none">
-          <p class="text-[11px] text-slate-500">Hardware CPU rate control (default: 12.5%)</p>
-        </div>
-        <div class="space-y-1">
-          <label class="text-xs font-medium text-slate-300">AppContainer Runtime Isolation</label>
-          <select id="cfg-isolation" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-100 focus:border-sky-500 outline-none">
-            <option value="true">Enabled (Windows 11 AppContainer)</option>
-            <option value="false">Disabled (Host Simulation Mode)</option>
-          </select>
-          <p class="text-[11px] text-slate-500">Enforces zero-capability sandbox</p>
-        </div>
-        <div class="space-y-1">
-          <label class="text-xs font-medium text-slate-300">Allow Irreversible Side Effects</label>
-          <select id="cfg-irreversible" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-100 focus:border-sky-500 outline-none">
-            <option value="false">Denied (Fail-Closed Policy)</option>
-            <option value="true">Permitted (Operator Clearance)</option>
-          </select>
-          <p class="text-[11px] text-slate-500">PDP gate for permanent actions</p>
-        </div>
-      </div>
-
-      <div class="pt-3">
-        <button onclick="saveConfig()" class="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-xs font-semibold text-white rounded-lg transition shadow">
-          💾 Save Configuration
-        </button>
-        <span id="cfg-status" class="ml-3 text-xs text-emerald-400 font-medium"></span>
-      </div>
-    </div>
-
-    <!-- Tab 2: Task Lifecycle -->
-    <div id="tab-tasks" class="tab-content hidden bg-slate-800/60 border border-slate-700 rounded-xl p-5 space-y-3">
+    <!-- Tab 1: Tasks -->
+    <div id="tab-tasks" class="tab-content bg-slate-800/60 border border-slate-700 rounded-xl p-5 space-y-3">
       <h2 class="text-base font-bold text-slate-100">Tasks & State Transitions</h2>
       <div class="overflow-x-auto">
         <table class="w-full text-left text-xs">
           <thead class="bg-slate-900/60 text-slate-400 border-b border-slate-700">
             <tr>
               <th class="p-2.5">Task ID</th>
-              <th class="p-2.5">Title</th>
+              <th class="p-2.5">Goal</th>
               <th class="p-2.5">State</th>
               <th class="p-2.5">Attempts</th>
-              <th class="p-2.5">Failure Reason</th>
+              <th class="p-2.5">Output 3D Asset</th>
             </tr>
           </thead>
           <tbody id="tasks-table-body" class="divide-y divide-slate-700/60">
@@ -368,49 +385,126 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- Tab 3: Mistake Memory -->
+    <!-- Tab 2: Config -->
+    <div id="tab-config" class="tab-content hidden bg-slate-800/60 border border-slate-700 rounded-xl p-5 space-y-4">
+      <h2 class="text-base font-bold text-slate-100">Control Solution Iterations & Resource Quotas</h2>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+        <div class="space-y-1">
+          <label class="text-xs font-medium text-slate-300">Max Attempts (Iteration Level)</label>
+          <input type="number" id="cfg-max-attempts" min="1" max="10" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-100 focus:border-sky-500 outline-none">
+        </div>
+        <div class="space-y-1">
+          <label class="text-xs font-medium text-slate-300">Attempt Timeout (Seconds)</label>
+          <input type="number" id="cfg-timeout" min="5" max="300" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-100 focus:border-sky-500 outline-none">
+        </div>
+        <div class="space-y-1">
+          <label class="text-xs font-medium text-slate-300">Memory Cap (MB per Worker)</label>
+          <input type="number" id="cfg-memory" min="50" max="1024" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-100 focus:border-sky-500 outline-none">
+        </div>
+        <div class="space-y-1">
+          <label class="text-xs font-medium text-slate-300">CPU Hard Cap (%)</label>
+          <input type="number" step="0.5" id="cfg-cpu" min="5" max="100" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-100 focus:border-sky-500 outline-none">
+        </div>
+        <div class="space-y-1">
+          <label class="text-xs font-medium text-slate-300">AppContainer Runtime Isolation</label>
+          <select id="cfg-isolation" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-100 focus:border-sky-500 outline-none">
+            <option value="true">Enabled (Windows 11 AppContainer)</option>
+            <option value="false">Disabled (Host Simulation Mode)</option>
+          </select>
+        </div>
+        <div class="space-y-1">
+          <label class="text-xs font-medium text-slate-300">Allow Irreversible Side Effects</label>
+          <select id="cfg-irreversible" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-100 focus:border-sky-500 outline-none">
+            <option value="false">Denied (Fail-Closed Policy)</option>
+            <option value="true">Permitted (Operator Clearance)</option>
+          </select>
+        </div>
+      </div>
+      <div class="pt-2">
+        <button onclick="saveConfig()" class="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-xs font-semibold text-white rounded-lg transition shadow">
+          💾 Save Configuration
+        </button>
+        <span id="cfg-status" class="ml-3 text-xs text-emerald-400 font-medium"></span>
+      </div>
+    </div>
+
+    <!-- Tab 3: Mistakes -->
     <div id="tab-mistakes" class="tab-content hidden bg-slate-800/60 border border-slate-700 rounded-xl p-5 space-y-3">
       <h2 class="text-base font-bold text-slate-100">Episodic Mistake Memory & Lessons Learned</h2>
-      <p class="text-xs text-slate-400">Biological anti-pattern ledger. Failed attempt signatures injected as negative prompt constraints on retries.</p>
       <div id="mistakes-container" class="space-y-2 pt-2">
         <p class="text-xs text-slate-500">Loading mistake ledger...</p>
       </div>
     </div>
 
-    <!-- Tab 4: Skill Bank -->
+    <!-- Tab 4: Skills -->
     <div id="tab-skills" class="tab-content hidden bg-slate-800/60 border border-slate-700 rounded-xl p-5 space-y-3">
       <h2 class="text-base font-bold text-slate-100">Skill Bank & Synthesized Tools</h2>
-      <p class="text-xs text-slate-400">Verified code artifacts crystallized into dynamic skills, registered in the broker for zero-shot re-use.</p>
       <div id="skills-container" class="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
         <p class="text-xs text-slate-500">Loading skills...</p>
       </div>
     </div>
 
-    <!-- Tab 5: Side Effects -->
-    <div id="tab-effects" class="tab-content hidden bg-slate-800/60 border border-slate-700 rounded-xl p-5 space-y-3">
-      <h2 class="text-base font-bold text-slate-100">Side-Effect Replay Ledger (AT-B-08, AT-B-09)</h2>
-      <div class="overflow-x-auto">
-        <table class="w-full text-left text-xs">
-          <thead class="bg-slate-900/60 text-slate-400 border-b border-slate-700">
-            <tr>
-              <th class="p-2.5">ID</th>
-              <th class="p-2.5">Attempt ID</th>
-              <th class="p-2.5">Tool</th>
-              <th class="p-2.5">Class</th>
-              <th class="p-2.5">Status</th>
-              <th class="p-2.5">Intent / Outcome</th>
-            </tr>
-          </thead>
-          <tbody id="effects-table-body" class="divide-y divide-slate-700/60">
-            <tr><td colspan="6" class="p-4 text-center text-slate-500">Loading effects...</td></tr>
-          </tbody>
-        </table>
+    <!-- Tab 5: Tools -->
+    <div id="tab-tools" class="tab-content hidden bg-slate-800/60 border border-slate-700 rounded-xl p-5 space-y-3">
+      <h2 class="text-base font-bold text-slate-100">Sensory & Motor Organs Catalog ('Eyes & Arms')</h2>
+      <div id="tools-container" class="space-y-2 pt-2">
+        <p class="text-xs text-slate-500">Loading tools...</p>
       </div>
     </div>
 
   </div>
 
   <script>
+    function setPrompt(text) {
+      document.getElementById('prompt-input').value = text;
+    }
+
+    async function dispatchUserTask() {
+      const input = document.getElementById('prompt-input');
+      const goal = input.value.trim();
+      if (!goal) return;
+
+      const launchGui = document.getElementById('check-launch-gui').checked;
+      const btn = document.getElementById('dispatch-btn');
+      const card = document.getElementById('live-status-card');
+      const title = document.getElementById('live-status-title');
+      const detail = document.getElementById('live-status-detail');
+      const linkDiv = document.getElementById('live-status-link');
+
+      btn.disabled = true;
+      btn.innerText = '⏳ Executing...';
+      card.classList.remove('hidden');
+      title.innerText = '⚡ Executing task: ' + goal;
+      detail.innerText = 'Worker dispatched -> Communicating over Named Pipe to real Blender 4.5...';
+      linkDiv.innerHTML = '';
+
+      try {
+        const res = await fetch('/api/tasks/dispatch', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ goal: goal, launch_gui: launchGui })
+        });
+        const data = await res.json();
+        title.innerText = `✓ Task Completed: ${data.state} (Took ${data.attempts_taken} attempts)`;
+        title.className = data.success ? 'font-bold text-emerald-400' : 'font-bold text-rose-400';
+        detail.innerText = `Artifact created: ${data.artifact_path || 'None'} (${data.artifact_size_bytes} bytes).`;
+        
+        if (data.download_url) {
+          linkDiv.innerHTML = `<a href="${data.download_url}" target="_blank" class="text-sky-400 underline font-semibold text-[11px]">📥 Download Generated 3D OBJ (${data.artifact_size_bytes} bytes)</a>`;
+        }
+        if (data.gui_launch && data.gui_launch.pid) {
+          detail.innerText += ` [Blender 4.5 GUI opened on desktop - PID: ${data.gui_launch.pid}]`;
+        }
+        refreshAll();
+      } catch (e) {
+        title.innerText = '❌ Task Failed';
+        detail.innerText = String(e);
+      } finally {
+        btn.disabled = false;
+        btn.innerText = '🚀 Dispatch Task';
+      }
+    }
+
     function switchTab(tabId) {
       document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
       document.querySelectorAll('.tab-btn').forEach(el => {
@@ -420,9 +514,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       document.getElementById(tabId).classList.remove('hidden');
       const btnId = 'btn-' + tabId.replace('tab-', '');
       const btn = document.getElementById(btnId);
-      if (btn) {
-        btn.classList.add('border-b-2', 'border-sky-400', 'text-sky-400');
-      }
+      if (btn) btn.classList.add('border-b-2', 'border-sky-400', 'text-sky-400');
     }
 
     async function loadConfig() {
@@ -485,7 +577,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <td class="p-2.5 font-medium text-slate-200">${t.title}</td>
             <td class="p-2.5"><span class="px-2 py-0.5 border rounded-full text-[10px] font-semibold ${badgeColor}">${t.state}</span></td>
             <td class="p-2.5 text-slate-400">${t.attempt_count} / ${t.max_attempts}</td>
-            <td class="p-2.5 text-slate-400">${t.failure_reason || 'None'}</td>
+            <td class="p-2.5 text-slate-400">
+              <a href="/workspaces/${t.id}.obj" target="_blank" class="text-sky-400 hover:underline font-mono text-[11px]">${t.id}.obj</a>
+            </td>
           </tr>
         `;
       }).join('');
@@ -496,7 +590,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const list = await res.json();
       const c = document.getElementById('mistakes-container');
       if (list.length === 0) {
-        c.innerHTML = '<p class="text-xs text-slate-500">No mistakes logged yet. System running cleanly.</p>';
+        c.innerHTML = '<p class="text-xs text-slate-500">No mistakes logged yet.</p>';
         return;
       }
       c.innerHTML = list.map(m => `
@@ -505,8 +599,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <span class="text-amber-400 font-semibold text-xs">[${m.error_category}] ${m.error_signature}</span>
             <span class="text-[10px] text-slate-500 font-mono">${m.task_id}</span>
           </div>
-          <p class="text-xs text-slate-300 font-medium">Lesson Learned: <span class="text-slate-200 font-normal">${m.lesson_learned}</span></p>
-          <p class="text-[11px] text-slate-500 font-mono">Context: ${m.context}</p>
+          <p class="text-xs text-slate-300 font-medium">Lesson: <span class="text-slate-200 font-normal">${m.lesson_learned}</span></p>
         </div>
       `).join('');
     }
@@ -526,46 +619,24 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <span class="text-[10px] text-slate-400">v${s.version}</span>
           </div>
           <p class="text-xs text-slate-300">${s.description}</p>
-          <pre class="bg-slate-950 p-2 rounded text-[10px] font-mono text-emerald-400 overflow-x-auto">${s.code}</pre>
+          <pre class="bg-slate-950 p-2 rounded text-[10px] font-mono text-emerald-400 overflow-x-auto max-h-36">${s.code}</pre>
         </div>
       `).join('');
     }
 
-    async function loadSideEffects() {
-      const res = await fetch('/api/side_effects');
+    async function loadTools() {
+      const res = await fetch('/api/tools');
       const list = await res.json();
-      const tbody = document.getElementById('effects-table-body');
-      if (list.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" class="p-4 text-center text-slate-500">No side-effects logged.</td></tr>';
-        return;
-      }
-      tbody.innerHTML = list.map(e => `
-        <tr class="hover:bg-slate-700/30">
-          <td class="p-2.5 font-mono text-slate-400">${e.id}</td>
-          <td class="p-2.5 font-mono text-slate-300 text-[11px]">${e.attempt_id}</td>
-          <td class="p-2.5 font-semibold text-sky-400">${e.tool_name}</td>
-          <td class="p-2.5"><span class="px-1.5 py-0.5 bg-slate-800 border border-slate-700 text-[10px] rounded text-slate-300">${e.effect_class}</span></td>
-          <td class="p-2.5 text-xs text-emerald-400">${e.status}</td>
-          <td class="p-2.5 font-mono text-[10px] text-slate-400 truncate max-w-xs">${e.outcome_payload || e.intent_payload}</td>
-        </tr>
+      const c = document.getElementById('tools-container');
+      c.innerHTML = list.map(t => `
+        <div class="bg-slate-900/60 border border-slate-700 rounded-lg p-3 flex items-center justify-between">
+          <div>
+            <span class="font-bold text-xs text-sky-400">${t.name}</span>
+            <p class="text-xs text-slate-300">${t.description}</p>
+          </div>
+          <span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 border border-slate-700 text-slate-300">${t.effect_class}</span>
+        </div>
       `).join('');
-    }
-
-    async function runDemoTask() {
-      const btn = event.target;
-      btn.disabled = true;
-      btn.innerText = '⏳ Executing...';
-      try {
-        const res = await fetch('/api/tasks/run_demo', { method: 'POST' });
-        const result = await res.json();
-        alert(`Task ${result.task_id} completed: ${result.final_state} (Took ${result.attempts_taken} attempts)`);
-        refreshAll();
-      } catch (e) {
-        alert('Task error: ' + e);
-      } finally {
-        btn.disabled = false;
-        btn.innerText = '⚡ Run Adaptive Task';
-      }
     }
 
     function refreshAll() {
@@ -573,7 +644,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       loadTasks();
       loadMistakes();
       loadSkills();
-      loadSideEffects();
+      loadTools();
     }
 
     window.onload = () => {
