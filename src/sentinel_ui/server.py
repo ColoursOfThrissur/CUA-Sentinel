@@ -5,9 +5,14 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 import time
 from pathlib import Path
 from typing import Any
+
+src_dir = Path(__file__).parent.parent.resolve()
+if str(src_dir) not in sys.path:
+    sys.path.insert(0, str(src_dir))
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
