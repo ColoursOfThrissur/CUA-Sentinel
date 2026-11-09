@@ -1,0 +1,18 @@
+{
+  "total_cycles": 50,
+  "successes": 50,
+  "failures": 0,
+  "total_duration_sec": 32.14,
+  "avg_cycle_sec": 0.643,
+  "min_cycle_sec": 0.599,
+  "max_cycle_sec": 0.685,
+  "initial_available_mb": 9501.1,
+  "final_available_mb": 9211.0,
+  "memory_delta_mb": -290.1,
+  "leftover_registry_keys": [],
+  "leftover_registry_count": 0,
+  "stray_pids_count": 0,
+  "stray_pids": [],
+  "remaining_workspace_bytes": 0,
+  "pass": true
+}

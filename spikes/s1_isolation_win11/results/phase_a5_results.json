@@ -1,0 +1,11 @@
+{
+  "registry_hkcu_write": {
+    "allowed": false,
+    "error": "PermissionError: [WinError 5] Access is denied"
+  },
+  "env_canary_leak": {
+    "leaked": false,
+    "value": null
+  },
+  "harness_pid": 2680
+}

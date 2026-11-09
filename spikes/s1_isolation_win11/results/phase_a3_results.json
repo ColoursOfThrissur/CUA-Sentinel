@@ -1,0 +1,28 @@
+{
+  "squatting_defense": {
+    "prevented": true,
+    "error": "[WinError 231] All pipe instances are busy."
+  },
+  "worker_a": {
+    "connection": "SUCCESS",
+    "heartbeat": {
+      "status": "PONG",
+      "echo_ts": 1794243160.8009343
+    },
+    "tool_call": {
+      "status": "APPROVED",
+      "result": {
+        "volume": 1.0,
+        "status": "calculated"
+      }
+    }
+  },
+  "cross_task_worker_b": {
+    "connection": "DENIED",
+    "error": "PermissionError: [Errno 13] Permission denied: '\\\\\\\\.\\\\pipe\\\\sentinel_test_pipe_1794243160_cross'"
+  },
+  "non_appcontainer_host_client": {
+    "connection": "SUCCESS",
+    "rpc_error": "OSError: [Errno 22] Invalid argument"
+  }
+}

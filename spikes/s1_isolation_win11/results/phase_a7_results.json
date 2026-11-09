@@ -1,0 +1,11 @@
+{
+  "duration_sec": 30.0,
+  "sample_count": 62,
+  "min_available_mb": 5992.8,
+  "avg_available_mb": 6007.6,
+  "swap_delta_mb": 0.0,
+  "ram_floor_target_mb": 2500.0,
+  "ram_floor_maintained": true,
+  "zero_sustained_pagefile_growth": true,
+  "pass": true
+}

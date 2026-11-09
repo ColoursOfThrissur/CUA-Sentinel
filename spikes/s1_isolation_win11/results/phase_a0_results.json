@@ -1,0 +1,389 @@
+{
+  "timestamp": "2026-11-07T22:50:00+05:30",
+  "elapsed_seconds": 18.27,
+  "raw_control": {
+    "network": {
+      "tcp_loopback": {
+        "status": "ALLOWED",
+        "allowed": true,
+        "bytes_received": 9,
+        "verified_echo": true,
+        "error": null
+      },
+      "tcp_lan": {
+        "status": "ALLOWED",
+        "allowed": true,
+        "bytes_received": 9,
+        "verified_echo": true,
+        "error": null
+      },
+      "udp_canary": {
+        "status": "ALLOWED",
+        "allowed": true,
+        "bytes_received": 12,
+        "verified_echo": true,
+        "error": null
+      },
+      "http_proxy": {
+        "status": "ALLOWED",
+        "allowed": true,
+        "status_code": 200,
+        "verified_proxy": true,
+        "error": null
+      },
+      "ipv6_loopback": {
+        "status": "ALLOWED",
+        "allowed": true,
+        "bytes_received": 9,
+        "verified_echo": true,
+        "error": null
+      },
+      "dns_public": {
+        "status": "ALLOWED",
+        "allowed": true,
+        "ips": [
+          "2404:6800:4007:805::200e",
+          "142.250.67.46"
+        ],
+        "error": null
+      },
+      "doh_https": {
+        "status": "ALLOWED",
+        "allowed": true,
+        "bytes_read": 516,
+        "error": null
+      }
+    },
+    "filesystem": {
+      "workspace_rw": {
+        "write": {
+          "status": "ALLOWED",
+          "allowed": true,
+          "error": null
+        },
+        "read": {
+          "status": "ALLOWED",
+          "allowed": true,
+          "exists": true,
+          "content": "VALID_WORKSPACE_DATA",
+          "error": null
+        }
+      },
+      "canary_direct_read": {
+        "status": "ALLOWED",
+        "allowed": true,
+        "exists": true,
+        "content": "AUTHENTIC_CANARY_SECRET_DATA",
+        "error": null
+      },
+      "canary_traversal_read": {
+        "status": "ALLOWED",
+        "allowed": true,
+        "exists": true,
+        "content": "AUTHENTIC_CANARY_SECRET_DATA",
+        "error": null
+      },
+      "canary_junction_read": {
+        "status": "ALLOWED",
+        "allowed": true,
+        "exists": true,
+        "content": "AUTHENTIC_CANARY_SECRET_DATA",
+        "error": null
+      },
+      "canary_symlink_read": {
+        "status": "NOT_TESTABLE",
+        "allowed": false,
+        "reason": "SeCreateSymbolicLinkPrivilege required (WinError 1314)"
+      },
+      "at_c_11_core_db_read": {
+        "status": "ALLOWED",
+        "allowed": true,
+        "exists": true,
+        "content": "malicious_write",
+        "error": null
+      },
+      "at_c_11_core_db_write": {
+        "status": "ALLOWED",
+        "allowed": true,
+        "error": null
+      },
+      "user_profile_ntuser_read": {
+        "status": "BLOCKED",
+        "allowed": false,
+        "exists": true,
+        "content": null,
+        "error": "PermissionError: [Errno 13] Permission denied: 'C:\\\\Users\\\\derik\\\\NTUSER.DAT'"
+      }
+    },
+    "m5_crash_exit_code": "0x3"
+  },
+  "raw_positive_control": {
+    "canary_direct_read": {
+      "status": "ALLOWED",
+      "allowed": true,
+      "exists": true,
+      "content": "AUTHENTIC_CANARY_SECRET_DATA",
+      "error": null
+    }
+  },
+  "raw_candidate_1b": {
+    "probe_results": {
+      "network": {
+        "tcp_loopback": {
+          "status": "BLOCKED",
+          "allowed": false,
+          "bytes_received": 0,
+          "verified_echo": false,
+          "error": "TimeoutError: timed out"
+        },
+        "tcp_lan": {
+          "status": "BLOCKED",
+          "allowed": false,
+          "bytes_received": 0,
+          "verified_echo": false,
+          "error": "TimeoutError: timed out"
+        },
+        "udp_canary": {
+          "status": "BLOCKED",
+          "allowed": false,
+          "bytes_received": 0,
+          "verified_echo": false,
+          "error": "TimeoutError: timed out"
+        },
+        "http_proxy": {
+          "status": "BLOCKED",
+          "allowed": false,
+          "status_code": 0,
+          "verified_proxy": false,
+          "error": "URLError: <urlopen error timed out>"
+        },
+        "ipv6_loopback": {
+          "status": "BLOCKED",
+          "allowed": false,
+          "bytes_received": 0,
+          "verified_echo": false,
+          "error": "TimeoutError: timed out"
+        },
+        "dns_public": {
+          "status": "BLOCKED",
+          "allowed": false,
+          "ips": [],
+          "error": "gaierror: [Errno 11001] getaddrinfo failed"
+        },
+        "doh_https": {
+          "status": "BLOCKED",
+          "allowed": false,
+          "bytes_read": 0,
+          "error": "ImportError: DLL load failed while importing _ssl: An internal error occurred."
+        }
+      },
+      "filesystem": {
+        "workspace_rw": {
+          "write": {
+            "status": "ALLOWED",
+            "allowed": true,
+            "error": null
+          },
+          "read": {
+            "status": "ALLOWED",
+            "allowed": true,
+            "exists": true,
+            "content": "VALID_WORKSPACE_DATA",
+            "error": null
+          }
+        },
+        "canary_direct_read": {
+          "status": "BLOCKED",
+          "allowed": false,
+          "exists": true,
+          "content": null,
+          "error": "PermissionError: [WinError 5] Access is denied: 'C:\\\\Users\\\\derik\\\\Desktop\\\\Derik\\\\Projects\\\\Sentinel\\\\spikes\\\\s1_isolation_win11\\\\canary\\\\secret_canary.txt'"
+        },
+        "canary_traversal_read": {
+          "status": "BLOCKED",
+          "allowed": false,
+          "exists": true,
+          "content": null,
+          "error": "PermissionError: [WinError 5] Access is denied: 'C:\\\\Users\\\\derik\\\\Desktop\\\\Derik\\\\Projects\\\\Sentinel\\\\spikes\\\\s1_isolation_win11\\\\temp_run_a0\\\\ws_1b\\\\..\\\\..\\\\canary\\\\secret_canary.txt'"
+        },
+        "canary_junction_read": {
+          "status": "BLOCKED",
+          "allowed": false,
+          "exists": true,
+          "content": null,
+          "error": "PermissionError: [WinError 5] Access is denied: 'C:\\\\Users\\\\derik\\\\Desktop\\\\Derik\\\\Projects\\\\Sentinel\\\\spikes\\\\s1_isolation_win11\\\\temp_run_a0\\\\ws_1b\\\\junction_canary\\\\secret_canary.txt'"
+        },
+        "canary_symlink_read": {
+          "status": "NOT_TESTABLE",
+          "allowed": false,
+          "reason": "SeCreateSymbolicLinkPrivilege required (WinError 1314)"
+        },
+        "at_c_11_core_db_read": {
+          "status": "BLOCKED",
+          "allowed": false,
+          "exists": true,
+          "content": null,
+          "error": "PermissionError: [WinError 5] Access is denied: 'C:\\\\Users\\\\derik\\\\Desktop\\\\Derik\\\\Projects\\\\Sentinel\\\\spikes\\\\s1_isolation_win11\\\\canary\\\\core.db'"
+        },
+        "at_c_11_core_db_write": {
+          "status": "BLOCKED",
+          "allowed": false,
+          "error": "PermissionError: [Errno 13] Permission denied: 'C:\\\\Users\\\\derik\\\\Desktop\\\\Derik\\\\Projects\\\\Sentinel\\\\spikes\\\\s1_isolation_win11\\\\canary\\\\core.db'"
+        },
+        "user_profile_ntuser_read": {
+          "status": "BLOCKED",
+          "allowed": false,
+          "exists": true,
+          "content": null,
+          "error": "PermissionError: [WinError 5] Access is denied: 'C:\\\\Users\\\\derik\\\\NTUSER.DAT'"
+        }
+      }
+    },
+    "m5_crash": {
+      "exit_code": 3,
+      "hex_exit_code": "0x3",
+      "is_ntstatus_or_sigsegv": true
+    },
+    "m4_teardown": {
+      "elapsed_kill_sec": 0.0,
+      "within_2s_window": true,
+      "tracked_pids": [
+        7328,
+        18208,
+        11608
+      ],
+      "survivors": [],
+      "pass": true
+    }
+  },
+  "matrix": [
+    {
+      "category": "Network",
+      "vector": "TCP Loopback (127.0.0.1:18080)",
+      "control": "ALLOWED",
+      "positive_control": "N/A",
+      "candidate_1b": "BLOCKED: TimeoutError: timed out",
+      "verdict": "PASS"
+    },
+    {
+      "category": "Network",
+      "vector": "TCP LAN IP (10.66.232.232:18081)",
+      "control": "ALLOWED",
+      "positive_control": "N/A",
+      "candidate_1b": "BLOCKED: TimeoutError: timed out",
+      "verdict": "PASS"
+    },
+    {
+      "category": "Network",
+      "vector": "UDP Echo (127.0.0.1:18082)",
+      "control": "ALLOWED",
+      "positive_control": "N/A",
+      "candidate_1b": "BLOCKED: TimeoutError: timed out",
+      "verdict": "PASS"
+    },
+    {
+      "category": "Network",
+      "vector": "HTTP Proxy (127.0.0.1:18083)",
+      "control": "ALLOWED",
+      "positive_control": "N/A",
+      "candidate_1b": "BLOCKED: URLError: <urlopen error timed out>",
+      "verdict": "PASS"
+    },
+    {
+      "category": "Network",
+      "vector": "IPv6 Loopback (::1:18085)",
+      "control": "ALLOWED",
+      "positive_control": "N/A",
+      "candidate_1b": "BLOCKED: TimeoutError: timed out",
+      "verdict": "PASS"
+    },
+    {
+      "category": "Network",
+      "vector": "DNS Resolution (google.com:80)",
+      "control": "ALLOWED",
+      "positive_control": "N/A",
+      "candidate_1b": "BLOCKED: gaierror: [Errno 11001] getaddrinfo failed",
+      "verdict": "PASS"
+    },
+    {
+      "category": "Network",
+      "vector": "DNS-over-HTTPS (1.1.1.1:443)",
+      "control": "ALLOWED",
+      "positive_control": "N/A",
+      "candidate_1b": "BLOCKED: ImportError: DLL load failed while importing _ssl: An internal error occurred.",
+      "verdict": "PASS"
+    },
+    {
+      "category": "Filesystem",
+      "vector": "Canary Direct Read",
+      "control": "ALLOWED",
+      "positive_control": "ALLOWED",
+      "candidate_1b": "BLOCKED: PermissionError: [WinError 5] Access is denied: 'C:\\\\Users\\\\derik\\\\Desktop\\\\Derik\\\\Projects\\\\Sentinel\\\\spikes\\\\s1_isolation_win11\\\\canary\\\\secret_canary.txt'",
+      "verdict": "PASS"
+    },
+    {
+      "category": "Filesystem",
+      "vector": "Canary Traversal Read (..\\)",
+      "control": "ALLOWED",
+      "positive_control": "N/A",
+      "candidate_1b": "BLOCKED: PermissionError: [WinError 5] Access is denied: 'C:\\\\Users\\\\derik\\\\Desktop\\\\Derik\\\\Projects\\\\Sentinel\\\\spikes\\\\s1_isolation_win11\\\\temp_run_a0\\\\ws_1b\\\\..\\\\..\\\\canary\\\\secret_canary.txt'",
+      "verdict": "PASS"
+    },
+    {
+      "category": "Filesystem",
+      "vector": "Canary Junction Read",
+      "control": "ALLOWED",
+      "positive_control": "N/A",
+      "candidate_1b": "BLOCKED: PermissionError: [WinError 5] Access is denied: 'C:\\\\Users\\\\derik\\\\Desktop\\\\Derik\\\\Projects\\\\Sentinel\\\\spikes\\\\s1_isolation_win11\\\\temp_run_a0\\\\ws_1b\\\\junction_canary\\\\secret_canary.txt'",
+      "verdict": "PASS"
+    },
+    {
+      "category": "Filesystem",
+      "vector": "AT-C-11 core.db Read",
+      "control": "ALLOWED",
+      "positive_control": "N/A",
+      "candidate_1b": "BLOCKED: PermissionError: [WinError 5] Access is denied: 'C:\\\\Users\\\\derik\\\\Desktop\\\\Derik\\\\Projects\\\\Sentinel\\\\spikes\\\\s1_isolation_win11\\\\canary\\\\core.db'",
+      "verdict": "PASS"
+    },
+    {
+      "category": "Filesystem",
+      "vector": "AT-C-11 core.db Write",
+      "control": "ALLOWED",
+      "positive_control": "N/A",
+      "candidate_1b": "BLOCKED: PermissionError: [Errno 13] Permission denied: 'C:\\\\Users\\\\derik\\\\Desktop\\\\Derik\\\\Projects\\\\Sentinel\\\\spikes\\\\s1_isolation_win11\\\\canary\\\\core.db'",
+      "verdict": "PASS"
+    },
+    {
+      "category": "Filesystem",
+      "vector": "User Profile Read (NTUSER.DAT)",
+      "control": "ALLOWED",
+      "positive_control": "N/A",
+      "candidate_1b": "BLOCKED: PermissionError: [WinError 5] Access is denied: 'C:\\\\Users\\\\derik\\\\NTUSER.DAT'",
+      "verdict": "PASS"
+    },
+    {
+      "category": "Filesystem",
+      "vector": "Canary Symlink Read",
+      "control": "NOT_TESTABLE",
+      "positive_control": "N/A",
+      "candidate_1b": "NOT_TESTABLE",
+      "verdict": "NOT_TESTABLE (WinError 1314 - SeCreateSymbolicLinkPrivilege required)"
+    },
+    {
+      "category": "Host Resilience",
+      "vector": "M5 Hard Crash (SIGSEGV / Exit 3)",
+      "control": "Exit 0x3",
+      "positive_control": "N/A",
+      "candidate_1b": "Exit 0x3 (SIGSEGV MATCH: True)",
+      "verdict": "PASS"
+    },
+    {
+      "category": "Process Teardown",
+      "vector": "M4 Teardown (2.0s window, 0 survivors)",
+      "control": "N/A",
+      "positive_control": "N/A",
+      "candidate_1b": "Elapsed 0.0s, Survivors: 0",
+      "verdict": "PASS"
+    }
+  ]
+}

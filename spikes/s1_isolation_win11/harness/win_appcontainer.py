@@ -118,6 +118,7 @@ class AppContainerRunner:
         cmd_args: list[str],
         timeout_sec: float = 30.0,
         job_object=None,
+        sanitize_env: bool = True,
     ) -> dict:
         # Create stdout/stderr pipes
         sa = ctypes.c_void_p()
@@ -184,6 +185,18 @@ class AppContainerRunner:
         cmd_line = subprocess.list2cmdline(cmd_args)
         cmd_buffer = ctypes.create_unicode_buffer(cmd_line)
 
+        # Environment Sanitization
+        orig_env = os.environ.copy()
+        if sanitize_env:
+            # Note: LOCALAPPDATA is strictly required by Windows AppContainer CreateProcessW,
+            # otherwise CreateProcessW fails with WinError 203 (ERROR_ENVVAR_NOT_FOUND).
+            safe_keys = {"PATH", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "LOCALAPPDATA", "USERPROFILE", "COMSPEC"}
+            for k in list(os.environ.keys()):
+                if k.upper() not in safe_keys:
+                    os.environ.pop(k, None)
+            os.environ["TEMP"] = str(self.workspace_path)
+            os.environ["TMP"] = str(self.workspace_path)
+
         success = kernel32.CreateProcessW(
             None,
             cmd_buffer,
@@ -196,6 +209,10 @@ class AppContainerRunner:
             ctypes.byref(si.StartupInfo),
             ctypes.byref(pi),
         )
+
+        if sanitize_env:
+            os.environ.clear()
+            os.environ.update(orig_env)
 
         # Close write end in parent
         kernel32.CloseHandle(h_write_pipe)

@@ -1,4 +1,6 @@
-"""Win32 Job Object wrapper for enforcing M3 (limits) and M4 (clean teardown)."""
+"""Win32 Job Object wrapper for enforcing M3 (limits) and M4 (clean teardown).
+Supports memory limits, CPU rate hard caps, process count limits, and kill-on-close.
+"""
 from __future__ import annotations
 
 import ctypes
@@ -11,6 +13,10 @@ JOB_OBJECT_LIMIT_JOB_MEMORY = 0x0200
 JOB_OBJECT_LIMIT_ACTIVE_PROCESS = 0x0008
 
 JobObjectExtendedLimitInformation = 9
+JobObjectCpuRateControlInformation = 15
+
+JOB_OBJECT_CPU_RATE_CONTROL_ENABLE = 0x1
+JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP = 0x4
 
 
 class IO_COUNTERS(ctypes.Structure):
@@ -49,6 +55,13 @@ class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
     ]
 
 
+class JOBOBJECT_CPU_RATE_CONTROL_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ("ControlFlags", wintypes.DWORD),
+        ("CpuRate", wintypes.DWORD),
+    ]
+
+
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
 CreateJobObjectW = kernel32.CreateJobObjectW
@@ -78,11 +91,19 @@ TerminateJobObject.restype = wintypes.BOOL
 
 
 class JobObject:
-    def __init__(self, name: str | None = None, memory_limit_mb: int | None = None, kill_on_close: bool = True):
+    def __init__(
+        self,
+        name: str | None = None,
+        memory_limit_mb: int | None = None,
+        cpu_rate_percent: float | None = None,
+        max_processes: int | None = None,
+        kill_on_close: bool = True,
+    ):
         self.handle = CreateJobObjectW(None, name)
         if not self.handle:
             raise ctypes.WinError(ctypes.get_last_error())
 
+        # 1. Extended Limit Info (Memory, Kill on close, Max processes)
         info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
         flags = 0
         if kill_on_close:
@@ -90,6 +111,9 @@ class JobObject:
         if memory_limit_mb:
             flags |= JOB_OBJECT_LIMIT_JOB_MEMORY
             info.JobMemoryLimit = memory_limit_mb * 1024 * 1024
+        if max_processes:
+            flags |= JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+            info.BasicLimitInformation.ActiveProcessLimit = max_processes
 
         info.BasicLimitInformation.LimitFlags = flags
         res = SetInformationJobObject(
@@ -101,6 +125,25 @@ class JobObject:
         if not res:
             CloseHandle(self.handle)
             raise ctypes.WinError(ctypes.get_last_error())
+
+        # 2. CPU Rate Control Info
+        if cpu_rate_percent is not None:
+            cpu_info = JOBOBJECT_CPU_RATE_CONTROL_INFORMATION()
+            cpu_info.ControlFlags = (
+                JOB_OBJECT_CPU_RATE_CONTROL_ENABLE
+                | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP
+            )
+            # CpuRate is expressed in tenths of a percent (e.g. 12.5% = 1250)
+            cpu_info.CpuRate = int(cpu_rate_percent * 100)
+            res_cpu = SetInformationJobObject(
+                self.handle,
+                JobObjectCpuRateControlInformation,
+                ctypes.byref(cpu_info),
+                ctypes.sizeof(cpu_info),
+            )
+            if not res_cpu:
+                CloseHandle(self.handle)
+                raise ctypes.WinError(ctypes.get_last_error())
 
     def assign_process(self, process_handle: int):
         res = AssignProcessToJobObject(self.handle, process_handle)

@@ -1,0 +1,31 @@
+{
+  "memory_bomb": {
+    "exit_code": 1,
+    "hex_exit_code": "0x1",
+    "terminated_by_os": true,
+    "pass": true
+  },
+  "cpu_hard_cap": {
+    "samples": [
+      14.0,
+      14.2,
+      12.7,
+      12.2,
+      10.0,
+      9.3,
+      9.1,
+      12.4
+    ],
+    "average_percent": 11.74,
+    "target_percent": 12.5,
+    "host_responsive": true,
+    "pass": true
+  },
+  "breakaway_teardown": {
+    "child_pid": null,
+    "kill_elapsed_sec": 0.0,
+    "within_2s_window": true,
+    "survived": false,
+    "pass": true
+  }
+}
