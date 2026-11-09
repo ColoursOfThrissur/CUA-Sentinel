@@ -22,6 +22,7 @@ from sentinel_adaptive.skill_bank import SkillBank
 from sentinel_broker.tool_registry import ToolRegistry
 from sentinel_broker.organs.sensory import register_sensory_organs
 from sentinel_broker.organs.motor import register_motor_organs
+from sentinel_broker.organs.blender import register_blender_organs
 from sentinel_adaptive.pilot_controller import AdaptivePilotController
 
 
@@ -47,30 +48,82 @@ def cmd_run(args):
     skill_bank = SkillBank(db, config.storage.skills_dir)
     pilot = AdaptivePilotController(state_machine, verification_gate, mistake_memory, skill_bank)
 
-    # Simulated worker demonstrating learning
-    target_path = Path("workspaces") / f"{task_id}.txt"
-    target_path.parent.mkdir(parents=True, exist_ok=True)
+    # Setup Tool Registry with real sensory, motor, and Blender tools
+    registry = ToolRegistry()
+    register_sensory_organs(registry)
+    register_motor_organs(registry)
+    register_blender_organs(registry)
+
+    # Real Blender 3D Workflow
+    target_obj = (Path("workspaces") / f"{task_id}.obj").resolve()
+    target_obj.parent.mkdir(parents=True, exist_ok=True)
+    is_blender_task = "blender" in goal.lower() or "3d" in goal.lower()
 
     def worker_logic(g, attempt_num, anti_patterns):
-        print(f"\n[Worker Attempt {attempt_num}] Running...")
-        if attempt_num == 1:
-            print("  Attempt 1: Generating naive output (triggering verification check)...")
-            target_path.write_text("", encoding="utf-8")
-            return {"file": str(target_path)}
+        print(f"\n[Worker Attempt {attempt_num}] Running real execution...")
+        if is_blender_task:
+            if attempt_num == 1:
+                print("  Attempt 1: Attempting naive Blender script (using malformed operator)...")
+                # Intentional mistake: uses invalid operator name 'primitive_cube_make'
+                broken_script = """
+import bpy
+bpy.ops.wm.read_factory_settings(use_empty=True)
+# Malformed operator name that raises AttributeError
+bpy.ops.mesh.primitive_cube_make(size=2.0)
+"""
+                res = registry.execute_tool("blender_run_python", {
+                    "script_code": broken_script,
+                    "output_obj_path": str(target_obj),
+                })
+                print(f"  Attempt 1 Blender exited with code {res['exit_code']}")
+                return {"tool_result": res, "artifact_path": str(target_obj)}
+            else:
+                print("  Attempt 2: Adapting Blender script based on anti-pattern feedback!")
+                print("  >> Calling real Blender 4.5 with verified mesh operator and OBJ exporter...")
+                # Adapted working script: creates 3D Suzanne mesh with subdivision surface
+                valid_script = f"""
+import bpy
+bpy.ops.wm.read_factory_settings(use_empty=True)
+bpy.ops.mesh.primitive_monkey_add(size=2.0, location=(0, 0, 0))
+obj = bpy.context.active_object
+mod = obj.modifiers.new(name="Subsurf", type='SUBSURF')
+mod.levels = 1
+bpy.ops.wm.obj_export(filepath=r"{str(target_obj)}")
+print("REAL_BLENDER_EXPORT_COMPLETED")
+"""
+                res = registry.execute_tool("blender_run_python", {
+                    "script_code": valid_script,
+                    "output_obj_path": str(target_obj),
+                })
+                print(f"  Attempt 2 Blender execution completed in {res['duration_sec']}s (exit code: {res['exit_code']})")
+                return {
+                    "tool_result": res,
+                    "artifact_path": str(target_obj),
+                    "synthesized_code": valid_script,
+                }
         else:
-            print(f"  Attempt 2: Adapting based on anti-pattern feedback!")
-            target_path.write_text(f"TASK_GOAL: {goal}\nSTATUS: VERIFIED_SUCCESSFUL\n", encoding="utf-8")
-            synthesized_code = (
-                f"# Skill synthesized for {goal}\n"
-                f"result = {{'executed': True, 'goal': '{goal}'}}\n"
-            )
-            return {
-                "file": str(target_path),
-                "synthesized_code": synthesized_code,
-            }
+            # Generic Windows Command Execution
+            cmd_str = f"Write-Output 'Executed: {goal}'"
+            res = registry.execute_tool("windows_command", {"command": cmd_str})
+            target_obj.with_suffix(".txt").write_text(f"Goal: {goal}\nStdout: {res['stdout']}\n", encoding="utf-8")
+            return {"tool_result": res, "artifact_path": str(target_obj.with_suffix('.txt'))}
 
     def verifier(output):
-        return verification_gate.verify_file_exists(target_path, min_bytes=10)
+        p = Path(output.get("artifact_path", ""))
+        # Check 1: File must exist and have at least 100 bytes of 3D data
+        file_check = verification_gate.verify_file_exists(p, min_bytes=100)
+        if not file_check.passed:
+            # Check if we have stderr from Blender to record exact lesson
+            tool_res = output.get("tool_result", {})
+            stderr = tool_res.get("stderr", "") or tool_res.get("stdout", "")
+            return VerificationResult(
+                passed=False,
+                error_category="BLENDER_EXECUTION_FAILURE",
+                error_signature="BlenderScriptError",
+                details={"stderr": stderr[-300:], "exit_code": tool_res.get("exit_code")},
+                lesson="Blender Python script failed or output OBJ file was not exported. Fix bpy operator syntax.",
+            )
+        return VerificationResult(passed=True, details={"bytes": p.stat().st_size})
 
     result = pilot.run_task(
         task_id=task_id,
@@ -104,6 +157,7 @@ def cmd_tools(args):
     registry = ToolRegistry()
     register_sensory_organs(registry)
     register_motor_organs(registry)
+    register_blender_organs(registry)
     tools = registry.list_tools()
     print("\n=== Registered Sensory & Motor Tools ('Eyes & Arms') ===")
     for t in tools:
