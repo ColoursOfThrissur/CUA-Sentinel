@@ -95,25 +95,42 @@ class MistakeMemory:
         )
         return [dict(r) for r in rows]
 
-    def get_cross_task_lessons(self, domain: str = "", limit: int = 3) -> list[dict[str, Any]]:
-        """Retrieves lessons learned across past tasks in the same domain."""
+    def get_cross_task_lessons(self, domain: str = "", limit: int = 2) -> list[dict[str, Any]]:
+        """Retrieves bounded, deduplicated lessons learned across past tasks in the same domain.
+        Strictly capped at top 2 entries and bounded token footprint (Upgrade D).
+        """
         if domain:
             kw = f"%{domain}%"
             rows = self.db.execute_read(
-                "SELECT * FROM mistake_ledger WHERE context LIKE ? OR lesson_learned LIKE ? ORDER BY id DESC LIMIT ?",
+                "SELECT error_category, error_signature, lesson_learned, COUNT(*) as freq "
+                "FROM mistake_ledger "
+                "WHERE context LIKE ? OR lesson_learned LIKE ? "
+                "GROUP BY error_category, error_signature "
+                "ORDER BY freq DESC, id DESC LIMIT ?",
                 (kw, kw, limit),
             )
         else:
             rows = self.db.execute_read(
-                "SELECT * FROM mistake_ledger ORDER BY id DESC LIMIT ?",
+                "SELECT error_category, error_signature, lesson_learned, COUNT(*) as freq "
+                "FROM mistake_ledger "
+                "GROUP BY error_category, error_signature "
+                "ORDER BY freq DESC, id DESC LIMIT ?",
                 (limit,),
             )
-        return [dict(r) for r in rows]
+        # Bounded formatting: truncate each lesson to 120 characters to prevent prompt bloat
+        bounded = []
+        for r in rows:
+            d = dict(r)
+            raw_lesson = (d.get("lesson_learned") or "").strip().replace("\n", " ")
+            d["lesson_learned"] = raw_lesson[:120] + ("..." if len(raw_lesson) > 120 else "")
+            bounded.append(d)
+        return bounded
 
     def format_anti_pattern_prompt(self, task_id: str, domain: str = "") -> str:
-        """Combines task-specific anti-patterns with historical cross-task lessons."""
+        """Combines task-specific anti-patterns with strictly bounded cross-task memory."""
         task_mistakes = self.get_task_mistakes(task_id)
-        cross_lessons = self.get_cross_task_lessons(domain, limit=3)
+        # Bounded cross-task memory: max 2 items
+        cross_lessons = self.get_cross_task_lessons(domain, limit=2)
 
         if not task_mistakes and not cross_lessons:
             return ""
@@ -126,14 +143,16 @@ class MistakeMemory:
         if task_mistakes:
             lines.append("Immediate Task Defect Feedback:")
             for idx, m in enumerate(task_mistakes, 1):
-                lines.append(f"  {idx}. [{m['error_category']}] Signature: {m['error_signature']}")
-                lines.append(f"     Lesson: {m['lesson_learned']}")
+                clean_sig = str(m.get("error_signature", ""))[:80]
+                clean_les = str(m.get("lesson_learned", ""))[:140].replace("\n", " ")
+                lines.append(f"  {idx}. [{m['error_category']}] Signature: {clean_sig}")
+                lines.append(f"     Lesson: {clean_les}")
 
-        # Append cross-task historic wisdom
+        # Append cross-task historic wisdom (capped to 2)
         if cross_lessons:
-            lines.append("\nCross-Task Historic Heuristics (Do NOT repeat these past mistakes):")
-            for idx, c in enumerate(cross_lessons, 1):
-                lines.append(f"  - Lesson: {c['lesson_learned']}")
+            lines.append("\nCross-Task Historic Heuristics (Do NOT repeat):")
+            for c in cross_lessons[:2]:
+                lines.append(f"  - [{c.get('error_category', 'ERROR')}] {c.get('lesson_learned', '')}")
 
         lines.append("\nCRITICAL: Satisfy all required adaptations above on this attempt.")
         return "\n".join(lines)

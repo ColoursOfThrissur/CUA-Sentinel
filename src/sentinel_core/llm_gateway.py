@@ -43,7 +43,7 @@ class LLMGateway:
         system: str | None = None,
         model: str | None = None,
         temperature: float = 0.2,
-        max_tokens: int = 2048,
+        max_tokens: int = 3072,
     ) -> str:
         """Generate raw text response from local Ollama model."""
         target_model = model or self.default_model
@@ -70,7 +70,12 @@ class LLMGateway:
         try:
             with urllib.request.urlopen(req, timeout=self.timeout_sec) as resp:
                 res_json = json.loads(resp.read().decode("utf-8"))
-                return res_json.get("response", "").strip()
+                resp_text = res_json.get("response", "").strip()
+                # If response was starved by reasoning token budget, fall back to thinking
+                if not resp_text and res_json.get("thinking"):
+                    logger.warning("LLM response field empty; extracting content from thinking field")
+                    resp_text = res_json.get("thinking", "").strip()
+                return resp_text
         except urllib.error.URLError as e:
             logger.error("LLM generation failed: %s", e)
             raise RuntimeError(f"Ollama connection error ({target_model}): {e}") from e

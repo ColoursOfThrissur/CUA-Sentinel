@@ -35,6 +35,9 @@ from sentinel_broker.organs.blender import register_blender_organs
 from sentinel_broker.organs.blender_prompts import synthesize_blender_script
 from sentinel_broker.organs.data_organ import register_data_organs
 from sentinel_core.llm_gateway import LLMGateway
+from sentinel_core.preflight_linter import PreFlightLinter
+from sentinel_core.contract_library import ContractLibrary
+from sentinel_core.prompt_scaffolder import PromptScaffolder, ScaffoldingLevel
 from sentinel_adaptive.pilot_controller import AdaptivePilotController
 
 logger = logging.getLogger("SentinelServer")
@@ -325,6 +328,12 @@ def dispatch_task(req: TaskDispatchRequest):
                 use_llm=True,
                 model=selected_model,
             )
+            # Upgrade A: Pre-Flight AST Linter / Rewriter (<2ms)
+            preflight = PreFlightLinter.sanitize(blender_script, domain="3d")
+            blender_script = preflight.code
+            if preflight.applied_fixes:
+                logger.info("PreFlightLinter sanitized 3D script: %s", preflight.applied_fixes)
+
             res = tool_registry.execute_tool("blender_run_python", {
                 "script_code": blender_script,
                 "output_obj_path": str(expected_artifact),
@@ -349,6 +358,10 @@ def dispatch_task(req: TaskDispatchRequest):
 
             raw_code = gw.generate(prompt=prompt_data, system=sys_inst, model=selected_model)
             py_code = gw.extract_python_code(raw_code)
+            # PreFlight sanitize
+            preflight = PreFlightLinter.sanitize(py_code, domain="code")
+            py_code = preflight.code
+
             res = tool_registry.execute_tool("python_sandbox_run", {
                 "script_code": py_code,
                 "output_artifact_path": str(expected_artifact),
@@ -361,16 +374,27 @@ def dispatch_task(req: TaskDispatchRequest):
         elif domain == "code":
             logger.info("Executing Code synthesis via LLM (%s) attempt %d", selected_model, attempt_num)
             gw = LLMGateway(endpoint=config.llm.endpoint, default_model=selected_model)
-            sys_inst = (
-                "You are Sentinel's Code Synthesizer. Output ONLY clean, self-contained Python code inside a ```python ``` block. "
-                "Include docstrings, type annotations, and an executable 'if __name__ == \"__main__\":' test block with assert statements "
-                "verifying correctness across normal and edge cases without runtime errors."
+            
+            # Upgrade C: Scaffolder with surgical failure anchoring on retry
+            scaffolding_lvl = ScaffoldingLevel.LEVEL_3_ADAPTIVE if anti_patterns else ScaffoldingLevel.LEVEL_2_GUARDED
+            sys_inst = PromptScaffolder.build_system_prompt("code", level=scaffolding_lvl)
+            prompt_code = PromptScaffolder.build_user_prompt(
+                goal=goal,
+                domain="code",
+                artifact_path=str(expected_artifact),
+                anti_patterns=anti_patterns,
+                level=scaffolding_lvl,
             )
-            prompt_code = f"Goal: {goal}"
-            if anti_patterns:
-                prompt_code += f"\n[PREVIOUS ATTEMPT FAILED WITH ERROR]:\n{anti_patterns}\nCarefully analyze this failure traceback and fix the code so it runs and passes all assertions."
+
             raw_code = gw.generate(prompt=prompt_code, system=sys_inst, model=selected_model)
             py_code = gw.extract_python_code(raw_code)
+            
+            # Upgrade A: Pre-Flight deterministic sanitizer
+            preflight = PreFlightLinter.sanitize(py_code, domain="code")
+            py_code = preflight.code
+            if preflight.applied_fixes:
+                logger.info("PreFlightLinter sanitized Python code: %s", preflight.applied_fixes)
+
             expected_artifact.write_text(py_code, encoding="utf-8")
             return {"tool_result": {"exit_code": 0, "stdout": "Code generated successfully"}, "artifact_path": str(expected_artifact), "synthesized_code": py_code}
         else:
@@ -394,20 +418,10 @@ def dispatch_task(req: TaskDispatchRequest):
             return verification_gate.verify_obj_geometry(p, min_vertices=10, min_faces=5)
         elif domain == "code":
             expected_syms = []
-            contract_harness = None
             if "lru" in lower_goal:
                 expected_syms = ["LRUCache", "get", "put"]
-                contract_harness = (
-                    "cache_inst = target_module.LRUCache(2)\n"
-                    "assert cache_inst.get(1) in (-1, None), 'Initial empty get must return -1 or None'\n"
-                    "cache_inst.put(1, 10)\n"
-                    "cache_inst.put(2, 20)\n"
-                    "assert cache_inst.get(1) == 10, 'Failed to retrieve key 1'\n"
-                    "cache_inst.put(3, 30)\n"
-                    "assert cache_inst.get(2) in (-1, None), 'Key 2 should have been evicted under capacity 2'\n"
-                    "assert cache_inst.get(1) == 10, 'Key 1 should still exist'\n"
-                    "assert cache_inst.get(3) == 30, 'Key 3 should exist'\n"
-                )
+            # Upgrade B: Automated Contract Harness matching from library
+            contract_harness = ContractLibrary.get_contract_for_goal(goal)
             return verification_gate.verify_python_code(
                 p,
                 required_symbols=expected_syms,

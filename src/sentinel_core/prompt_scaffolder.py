@@ -30,12 +30,10 @@ DOMAIN_GUARDRAILS = {
     "code": (
         "PYTHON ALGORITHM & CODE CONTRACT:\n"
         "1. Self-Contained: Use standard library only (e.g. collections.OrderedDict, heapq, typing). No external pip dependencies.\n"
-        "2. Correctness & Edge Cases: Handle empty state, single-element capacity, and capacity overflow.\n"
-        "3. Invariant: When updating existing keys, move them to MRU without increasing cache size.\n"
-        "4. Eviction: popitem(last=False) removes the LRU item. DO NOT call del cache[key] after popitem() - it will cause KeyError.\n"
-        "5. Verification Suite: Include an if __name__ == '__main__': block with at least 5 assert statements covering normal cases, "
-        "updates, and edge cases. Ensure all assertions are logically valid.\n"
-        "6. Output: Output ONLY executable code inside a ```python ``` block."
+        "2. Core Implementation: Implement ONLY the requested class and methods (e.g. LRUCache with get and put).\n"
+        "3. Eviction Semantics: popitem(last=False) removes the LRU item cleanly. DO NOT call del cache[key] after popitem().\n"
+        "4. No Self-Tests Needed: DO NOT write lengthy or contradictory self-tests. Sentinel verifies your code with an independent external contract harness.\n"
+        "5. Output: Return ONLY executable Python code inside a ```python ``` block."
     ),
     "data": (
         "CSV & DATASET CONTRACT:\n"
@@ -99,17 +97,21 @@ class PromptScaffolder:
         # In Level 3 (Adaptive), inject previous defects and cross-task memory
         if level == ScaffoldingLevel.LEVEL_3_ADAPTIVE:
             if historic_lessons:
-                lessons_block = "\n".join(f"- {h}" for h in historic_lessons[:3])
+                # Bounded cross-task memory: top 2 only, capped
+                lessons_block = "\n".join(f"- {h[:120]}" for h in historic_lessons[:2])
                 prompt_parts.append(
-                    f"\n[ORGAN MEMORY - PREVIOUS DOMAIN LESSONS]:\n{lessons_block}"
+                    f"\n[ORGAN MEMORY - PREVIOUS DOMAIN LESSONS (MAX 2)]:\n{lessons_block}"
                 )
 
             if anti_patterns:
+                # Upgrade C: Surgical Anchoring
+                tb_lines = [l.strip() for l in anti_patterns.splitlines() if l.strip()]
+                last_err = tb_lines[-1] if tb_lines else "Unknown error"
                 prompt_parts.append(
-                    f"\n[CRITICAL LESSON FROM PREVIOUS FAILED ATTEMPT]:\n"
-                    f"The previous attempt failed with the following traceback/defect:\n"
-                    f"```\n{anti_patterns}\n```\n"
-                    f"Address this root cause directly. Ensure the corrected code does not trigger this defect."
+                    f"\n[SURGICAL REPAIR REQUIRED - DO NOT REGENERATE WORKING PARTS]:\n"
+                    f"The previous attempt failed with defect: '{last_err}'\n"
+                    f"Traceback details:\n```\n{anti_patterns}\n```\n"
+                    f"Preserve all working logic and apply a surgical fix resolving '{last_err}' directly."
                 )
 
         return "\n".join(prompt_parts)
