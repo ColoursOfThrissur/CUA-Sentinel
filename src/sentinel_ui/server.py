@@ -32,6 +32,7 @@ from sentinel_broker.organs.sensory import register_sensory_organs
 from sentinel_broker.organs.motor import register_motor_organs
 from sentinel_broker.organs.blender import register_blender_organs
 from sentinel_broker.organs.blender_prompts import synthesize_blender_script
+from sentinel_core.llm_gateway import LLMGateway
 from sentinel_adaptive.pilot_controller import AdaptivePilotController
 
 logger = logging.getLogger("SentinelServer")
@@ -72,12 +73,14 @@ class ConfigUpdateRequest(BaseModel):
     cpu_rate_percent: float | None = None
     use_appcontainer: bool | None = None
     allow_irreversible: bool | None = None
+    llm_model: str | None = None
 
 
 class TaskDispatchRequest(BaseModel):
     goal: str
     launch_gui: bool = False
     max_attempts: int | None = None
+    model: str | None = None
 
 
 class ExecuteSkillRequest(BaseModel):
@@ -98,6 +101,7 @@ def update_config(req: ConfigUpdateRequest):
         "resource_quotas": {},
         "isolation": {},
         "policy": {},
+        "llm": {},
     }
     if req.max_attempts is not None:
         updates["iteration_limits"]["max_attempts"] = req.max_attempts
@@ -111,10 +115,26 @@ def update_config(req: ConfigUpdateRequest):
         updates["isolation"]["use_appcontainer"] = req.use_appcontainer
     if req.allow_irreversible is not None:
         updates["policy"]["allow_irreversible"] = req.allow_irreversible
+    if req.llm_model is not None:
+        updates["llm"]["model"] = req.llm_model
 
     config.update_from_dict(updates)
     config.save(CONFIG_PATH)
     return {"status": "CONFIG_SAVED", "config": config.to_dict()}
+
+
+@app.get("/api/models")
+def list_models():
+    """Returns available Ollama models with the active model highlighted."""
+    import urllib.request
+    try:
+        req = urllib.request.Request(f"{config.llm.endpoint}/api/tags")
+        with urllib.request.urlopen(req, timeout=3.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            models = [m.get("name") for m in data.get("models", [])]
+            return {"active_model": config.llm.model, "available_models": models}
+    except Exception:
+        return {"active_model": config.llm.model, "available_models": [config.llm.model]}
 
 
 @app.get("/api/telemetry")
@@ -184,38 +204,56 @@ def dispatch_task(req: TaskDispatchRequest):
     task_id = f"task_{int(time.time())}"
     goal = req.goal.strip()
     max_att = req.max_attempts or config.iteration_limits.max_attempts
+    selected_model = req.model or config.llm.model
 
-    is_3d_task = any(w in goal.lower() for w in ["3d", "blender", "model", "sword", "mug", "spaceship", "tree", "chair", "monkey", "mesh"])
+    is_3d_task = any(w in goal.lower() for w in [
+        "3d", "blender", "model", "sword", "mug", "spaceship", "tree", "chair", "monkey", "mesh",
+        "build", "turret", "gatling", "cylinder", "cube", "sphere", "torus", "geometry", "sculpture",
+        "gun", "barrel", "mount", "bracket", "pillar", "shaft", "car", "robot", "cannon", "shield",
+        "armor", "helmet", "ring", "table", "lamp", "building", "castle", "plane", "rifle", "dagger"
+    ])
     target_obj = workspaces_dir / f"{task_id}.obj"
+    target_txt = workspaces_dir / f"{task_id}.txt"
+    expected_artifact = target_obj if is_3d_task else target_txt
 
     def worker_executor(g: str, attempt_num: int, anti_patterns: str):
         if is_3d_task:
-            if attempt_num == 1 and not anti_patterns:
-                # Deliberate naive attempt to test verification gate
-                broken_script = "import bpy\nbpy.ops.wm.read_factory_settings(use_empty=True)\nbpy.ops.mesh.primitive_cube_make(size=1.0)"
-                res = tool_registry.execute_tool("blender_run_python", {
-                    "script_code": broken_script,
-                    "output_obj_path": str(target_obj),
-                })
-                return {"tool_result": res, "artifact_path": str(target_obj)}
-            else:
-                # Real synthesis for the requested goal
-                blender_script = synthesize_blender_script(goal, str(target_obj))
-                res = tool_registry.execute_tool("blender_run_python", {
-                    "script_code": blender_script,
-                    "output_obj_path": str(target_obj),
-                })
-                return {
-                    "tool_result": res,
-                    "artifact_path": str(target_obj),
-                    "synthesized_code": blender_script,
-                }
+            logger.info("Executing 3D synthesis via LLM (%s) attempt %d", selected_model, attempt_num)
+            blender_script = synthesize_blender_script(
+                goal=goal,
+                output_obj_path=str(target_obj),
+                anti_patterns=anti_patterns,
+                use_llm=True,
+                model=selected_model,
+            )
+            res = tool_registry.execute_tool("blender_run_python", {
+                "script_code": blender_script,
+                "output_obj_path": str(target_obj),
+            })
+            return {
+                "tool_result": res,
+                "artifact_path": str(target_obj),
+                "synthesized_code": blender_script,
+            }
         else:
-            # Generic host execution
-            cmd_res = tool_registry.execute_tool("windows_command", {"command": f"Write-Output '{goal}'"})
+            # Generic host execution with LLM reasoning
+            gw = LLMGateway(endpoint=config.llm.endpoint, default_model=selected_model)
+            if gw.is_available():
+                prompt_sys = (
+                    "You are Sentinel's autonomous agent. Directly and concisely solve the user's request. "
+                    "If system operations or code are requested, provide exact steps."
+                )
+                llm_response = gw.generate(prompt=goal, system=prompt_sys, model=selected_model)
+            else:
+                cmd_res = tool_registry.execute_tool("windows_command", {"command": f"Write-Output '{goal}'"})
+                llm_response = cmd_res.get("stdout", "")
+
             target_txt = workspaces_dir / f"{task_id}.txt"
-            target_txt.write_text(f"Task: {goal}\nStdout: {cmd_res['stdout']}\n", encoding="utf-8")
-            return {"tool_result": cmd_res, "artifact_path": str(target_txt)}
+            target_txt.write_text(f"Task: {goal}\nModel: {selected_model}\nTimestamp: {time.ctime()}\n\n{llm_response}\n", encoding="utf-8")
+            return {
+                "tool_result": {"stdout": llm_response, "exit_code": 0},
+                "artifact_path": str(target_txt),
+            }
 
     def verifier(output: dict) -> VerificationResult:
         p = Path(output.get("artifact_path", ""))
@@ -223,12 +261,13 @@ def dispatch_task(req: TaskDispatchRequest):
         res = verification_gate.verify_file_exists(p, min_bytes=min_sz)
         if not res.passed:
             tool_res = output.get("tool_result", {})
+            stderr = tool_res.get("stderr", "").strip() or "Output artifact missing or empty (0 bytes)."
             return VerificationResult(
                 passed=False,
                 error_category="EXECUTION_DEFECT",
                 error_signature="OutputArtifactMissingOrEmpty",
-                details={"exit_code": tool_res.get("exit_code"), "stderr": tool_res.get("stderr", "")[:300]},
-                lesson="Script failed to produce valid output. Ensure correct operator syntax and output path.",
+                details={"exit_code": tool_res.get("exit_code"), "stderr": stderr[:400]},
+                lesson=f"Blender script failed: {stderr[:300]}",
             )
         return res
 
@@ -243,21 +282,22 @@ def dispatch_task(req: TaskDispatchRequest):
 
     # Launch in Blender GUI if requested
     gui_info = None
-    if req.launch_gui and target_obj.exists() and is_3d_task:
+    if req.launch_gui and expected_artifact.exists() and is_3d_task:
         try:
-            gui_info = tool_registry.execute_tool("blender_launch_gui", {"file_to_open": str(target_obj)})
+            gui_info = tool_registry.execute_tool("blender_launch_gui", {"file_to_open": str(expected_artifact)})
         except Exception as e:
             gui_info = {"error": str(e)}
 
     return {
         "task_id": result.task.id,
         "goal": goal,
+        "model": selected_model,
         "state": result.task.state.value,
         "attempts_taken": result.attempts_taken,
         "success": result.success,
-        "artifact_path": str(target_obj) if target_obj.exists() else None,
-        "artifact_size_bytes": target_obj.stat().st_size if target_obj.exists() else 0,
-        "download_url": f"/workspaces/{target_obj.name}" if target_obj.exists() else None,
+        "artifact_path": str(expected_artifact) if expected_artifact.exists() else None,
+        "artifact_size_bytes": expected_artifact.stat().st_size if expected_artifact.exists() else 0,
+        "download_url": f"/workspaces/{expected_artifact.name}" if expected_artifact.exists() else None,
         "gui_launch": gui_info,
         "distilled_skill": result.distilled_skill,
         "mistakes_encountered": result.mistakes_encountered,
@@ -299,8 +339,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       </div>
 
       <div class="flex gap-2">
+        <select id="select-model" class="bg-slate-950 border border-slate-700 text-sky-400 rounded-lg px-3 py-2 text-xs font-semibold outline-none">
+          <option value="qwen3.5:9b" selected>🧠 Qwen 3.5 (9B) [Active]</option>
+          <option value="qwen3:14b-q4_K_M">🧠 Qwen 3 (14B Q4)</option>
+          <option value="qwen3-vl:8b">🧠 Qwen 3 VL (8B)</option>
+          <option value="phi3:latest">🧠 Phi 3</option>
+          <option value="mistral:7b">🧠 Mistral (7B)</option>
+        </select>
         <input id="prompt-input" type="text" 
-          placeholder="Type any 3D model or task prompt here (e.g., 'Create a 3D low-poly sword in Blender')..." 
+          placeholder="Type any 3D model or task prompt here (e.g., 'Create a futuristic mech cannon in Blender')..." 
           class="flex-1 bg-slate-950 border border-slate-700 focus:border-sky-500 rounded-lg px-4 py-2 text-xs text-slate-100 outline-none shadow-inner"
           onkeydown="if(event.key==='Enter') dispatchUserTask()">
         <button id="dispatch-btn" onclick="dispatchUserTask()" 
@@ -470,6 +517,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       if (!goal) return;
 
       const launchGui = document.getElementById('check-launch-gui').checked;
+      const model = document.getElementById('select-model').value;
       const btn = document.getElementById('dispatch-btn');
       const card = document.getElementById('live-status-card');
       const title = document.getElementById('live-status-title');
@@ -480,19 +528,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       btn.innerText = '⏳ Executing...';
       card.classList.remove('hidden');
       title.innerText = '⚡ Executing task: ' + goal;
-      detail.innerText = 'Worker dispatched -> Communicating over Named Pipe to real Blender 4.5...';
+      detail.innerText = `Brain: ${model} synthesizing Blender 4.5 Python bpy script...`;
       linkDiv.innerHTML = '';
 
       try {
         const res = await fetch('/api/tasks/dispatch', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ goal: goal, launch_gui: launchGui })
+          body: JSON.stringify({ goal: goal, launch_gui: launchGui, model: model })
         });
         const data = await res.json();
-        title.innerText = `✓ Task Completed: ${data.state} (Took ${data.attempts_taken} attempts)`;
+        title.innerText = `✓ Task Completed: ${data.state} (Took ${data.attempts_taken} attempt(s))`;
         title.className = data.success ? 'font-bold text-emerald-400' : 'font-bold text-rose-400';
-        detail.innerText = `Artifact created: ${data.artifact_path || 'None'} (${data.artifact_size_bytes} bytes).`;
+        detail.innerText = `Model: ${data.model || model} · 3D Asset: ${data.artifact_path || 'None'} (${data.artifact_size_bytes} bytes).`;
         
         if (data.download_url) {
           linkDiv.innerHTML = `<a href="${data.download_url}" target="_blank" class="text-sky-400 underline font-semibold text-[11px]">📥 Download Generated 3D OBJ (${data.artifact_size_bytes} bytes)</a>`;

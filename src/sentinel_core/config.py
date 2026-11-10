@@ -46,6 +46,14 @@ class PolicyConfig:
 
 
 @dataclass
+class LLMConfig:
+    provider: str = "ollama"
+    model: str = "qwen3.5:9b"
+    endpoint: str = "http://127.0.0.1:11434"
+    timeout_sec: float = 120.0
+
+
+@dataclass
 class SentinelConfig:
     environment: str = "development"
     log_level: str = "INFO"
@@ -54,6 +62,7 @@ class SentinelConfig:
     isolation: IsolationConfig = field(default_factory=IsolationConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     policy: PolicyConfig = field(default_factory=PolicyConfig)
+    llm: LLMConfig = field(default_factory=LLMConfig)
 
     @classmethod
     def load(cls, config_path: str | Path | None = None) -> SentinelConfig:
@@ -69,6 +78,7 @@ class SentinelConfig:
         iso_data = data.get("isolation", {})
         storage_data = data.get("storage", {})
         policy_data = data.get("policy", {})
+        llm_data = data.get("llm", {})
 
         return cls(
             environment=data.get("system", {}).get("environment", "development"),
@@ -78,6 +88,7 @@ class SentinelConfig:
             isolation=IsolationConfig(**iso_data),
             storage=StorageConfig(**storage_data),
             policy=PolicyConfig(**policy_data),
+            llm=LLMConfig(**llm_data),
         )
 
     def save(self, config_path: str | Path | None = None):
@@ -92,6 +103,7 @@ class SentinelConfig:
             "isolation": asdict(self.isolation),
             "storage": asdict(self.storage),
             "policy": asdict(self.policy),
+            "llm": asdict(self.llm),
         }
         p.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
 
@@ -104,6 +116,7 @@ class SentinelConfig:
             "isolation": asdict(self.isolation),
             "storage": asdict(self.storage),
             "policy": asdict(self.policy),
+            "llm": asdict(self.llm),
         }
 
     def update_from_dict(self, data: dict[str, Any]):
@@ -119,6 +132,14 @@ class SentinelConfig:
             for k, v in data["isolation"].items():
                 if hasattr(self.isolation, k):
                     setattr(self.isolation, k, v)
+        if "policy" in data:
+            for k, v in data["policy"].items():
+                if hasattr(self.policy, k):
+                    setattr(self.policy, k, v)
+        if "llm" in data:
+            for k, v in data["llm"].items():
+                if hasattr(self.llm, k):
+                    setattr(self.llm, k, v)
         if "policy" in data:
             for k, v in data["policy"].items():
                 if hasattr(self.policy, k):

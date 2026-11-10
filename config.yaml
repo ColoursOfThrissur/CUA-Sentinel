@@ -26,3 +26,9 @@ storage:
 policy:
   allow_irreversible: false
   fail_closed_pdp: true
+
+llm:
+  provider: "ollama"
+  model: "qwen3.5:9b"
+  endpoint: "http://127.0.0.1:11434"
+  timeout_sec: 120.0
