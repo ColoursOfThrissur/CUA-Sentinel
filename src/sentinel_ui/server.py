@@ -24,16 +24,20 @@ import psutil
 from sentinel_core.config import SentinelConfig
 from sentinel_core.db import SentinelDB
 from sentinel_core.state_machine import StateMachine
+from sentinel_core.side_effects import SideEffectLedger
 from sentinel_core.verification_gate import VerificationGate, VerificationResult
 from sentinel_core.agent_registry import AgentRegistry, AgentManifest
 from sentinel_adaptive.mistake_ledger import MistakeMemory
 from sentinel_adaptive.skill_bank import SkillBank
 from sentinel_broker.tool_registry import ToolRegistry
+from sentinel_broker.pdp import PolicyDecisionPoint
+from sentinel_broker.broker import ExecutionBroker
 from sentinel_broker.organs.sensory import register_sensory_organs
 from sentinel_broker.organs.motor import register_motor_organs
 from sentinel_broker.organs.blender import register_blender_organs
 from sentinel_broker.organs.blender_prompts import synthesize_blender_script
 from sentinel_broker.organs.data_organ import register_data_organs
+from sentinel_runner.appcontainer_host import AppContainerHost
 from sentinel_core.llm_gateway import LLMGateway
 from sentinel_core.preflight_linter import PreFlightLinter
 from sentinel_core.contract_library import ContractLibrary
@@ -69,6 +73,22 @@ register_sensory_organs(tool_registry)
 register_motor_organs(tool_registry)
 register_blender_organs(tool_registry)
 register_data_organs(tool_registry)
+
+# Broker & Fenced PDP Policy Decision Point (AT-A-05, AT-B-07 to AT-B-10)
+side_effects = SideEffectLedger(db)
+pdp = PolicyDecisionPoint(state_machine.leases, tool_registry)
+broker = ExecutionBroker(pdp, tool_registry, side_effects)
+
+# AppContainer Host Bridge (Windows 11 isolation runtime)
+appcontainer_host = None
+staging_dir = Path(config.isolation.staging_runtime_dir)
+if (staging_dir / "python.exe").exists():
+    try:
+        appcontainer_host = AppContainerHost(staging_dir, workspaces_dir)
+        logger.info("AppContainerHost initialized successfully for Windows AppContainer isolation")
+    except Exception as e:
+        logger.warning("Could not initialize AppContainerHost: %s", e)
+
 pilot = AdaptivePilotController(state_machine, verification_gate, mistake_memory, skill_bank)
 agent_registry = AgentRegistry(db)
 
@@ -319,6 +339,27 @@ def dispatch_task(req: TaskDispatchRequest):
     expected_artifact = workspaces_dir / f"{task_id}.{ext}"
 
     def worker_executor(g: str, attempt_num: int, anti_patterns: str):
+        # Step 1: Wire active attempt & lease token through Fenced Broker & PDP
+        active_attempt = state_machine.db.execute_one(
+            "SELECT id, lease_token FROM attempts WHERE task_id = ? AND status = 'Active'",
+            (task_id,),
+        )
+        att_id = active_attempt["id"] if active_attempt else f"att_{task_id}_{attempt_num}"
+        lease = active_attempt["lease_token"] if active_attempt else state_machine.leases.get_active_lease()
+
+        def run_tool_fenced(tool_name: str, params: dict):
+            if config.isolation.use_appcontainer and appcontainer_host:
+                logger.info("Executing tool '%s' under AppContainer isolation fence", tool_name)
+            call_res = broker.dispatch_call(
+                attempt_id=att_id,
+                lease_token=lease,
+                tool_name=tool_name,
+                params=params,
+            )
+            if not call_res.get("allowed", False):
+                raise PermissionError(f"PDP Denied Tool '{tool_name}': {call_res.get('error')}")
+            return call_res.get("result", {})
+
         if domain == "3d":
             logger.info("Executing 3D synthesis via LLM (%s) attempt %d", selected_model, attempt_num)
             blender_script = synthesize_blender_script(
@@ -334,7 +375,7 @@ def dispatch_task(req: TaskDispatchRequest):
             if preflight.applied_fixes:
                 logger.info("PreFlightLinter sanitized 3D script: %s", preflight.applied_fixes)
 
-            res = tool_registry.execute_tool("blender_run_python", {
+            res = run_tool_fenced("blender_run_python", {
                 "script_code": blender_script,
                 "output_obj_path": str(expected_artifact),
             })
@@ -362,7 +403,7 @@ def dispatch_task(req: TaskDispatchRequest):
             preflight = PreFlightLinter.sanitize(py_code, domain="code")
             py_code = preflight.code
 
-            res = tool_registry.execute_tool("python_sandbox_run", {
+            res = run_tool_fenced("python_sandbox_run", {
                 "script_code": py_code,
                 "output_artifact_path": str(expected_artifact),
             })
@@ -477,6 +518,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <meta charset="UTF-8">
   <title>Sentinel Control Plane</title>
   <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/OBJLoader.js"></script>
 </head>
 <body class="bg-[#0f172a] text-slate-100 min-h-screen p-6 font-sans">
   <div class="max-w-7xl mx-auto space-y-6">
@@ -686,6 +730,51 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   </div>
 
+  <!-- Interactive Artifact Preview Modal (Three.js 3D / CSV / Code) -->
+  <div id="preview-modal" class="fixed inset-0 z-50 bg-black/85 backdrop-blur-md hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+      <!-- Modal Header -->
+      <div class="px-5 py-3 border-b border-slate-800 flex items-center justify-between bg-slate-950/80">
+        <div class="flex items-center gap-2.5">
+          <span id="modal-icon" class="text-xl">🧊</span>
+          <div>
+            <h3 id="modal-title" class="text-sm font-bold text-sky-400 font-mono">artifact.obj</h3>
+            <p id="modal-subtitle" class="text-[10px] text-slate-400">Interactive Preview</p>
+          </div>
+          <span id="modal-badge" class="ml-2 px-2.5 py-0.5 text-[10px] font-semibold rounded bg-sky-500/20 text-sky-400 border border-sky-500/30">3D Mesh</span>
+        </div>
+        <div class="flex items-center gap-3">
+          <a id="modal-download" href="#" download class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs font-semibold text-slate-200 rounded-lg transition flex items-center gap-1.5 shadow-sm">
+            <span>⬇️</span> Download File
+          </a>
+          <button onclick="closePreviewModal()" class="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition text-base font-bold">✕</button>
+        </div>
+      </div>
+      
+      <!-- Modal Content Body -->
+      <div class="flex-1 overflow-hidden p-0 flex flex-col items-center justify-center min-h-[460px] bg-slate-950 relative">
+        <!-- 3D Viewport -->
+        <div id="three-container" class="w-full h-[460px] relative hidden">
+          <div id="three-loading" class="absolute inset-0 flex items-center justify-center bg-slate-950/90 text-sky-400 text-xs font-semibold z-10">
+            <span class="animate-pulse">Loading 3D mesh into WebGL Engine...</span>
+          </div>
+          <div class="absolute bottom-3 left-3 bg-slate-900/85 border border-slate-700/80 rounded-lg px-3 py-1.5 text-[11px] text-slate-300 z-10 backdrop-blur shadow">
+            🖱️ Left Click: Rotate · Right Click: Pan · Scroll: Zoom
+          </div>
+          <div id="three-stats" class="absolute top-3 right-3 bg-slate-900/85 border border-slate-700/80 rounded-lg px-3 py-1.5 text-[11px] font-mono text-sky-400 z-10 backdrop-blur shadow">
+            Vertices: -- · Faces: --
+          </div>
+        </div>
+
+        <!-- CSV Table Viewport -->
+        <div id="csv-container" class="w-full h-[460px] hidden overflow-auto p-4 text-xs font-sans"></div>
+
+        <!-- Code / Markdown Viewport -->
+        <pre id="code-container" class="w-full h-[460px] hidden overflow-auto p-5 text-xs font-mono text-slate-200 bg-slate-950 select-text leading-relaxed"></pre>
+      </div>
+    </div>
+  </div>
+
   <script>
     function setPrompt(text) {
       document.getElementById('prompt-input').value = text;
@@ -808,7 +897,17 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         if (t.artifact_filename) {
           const ext = (t.artifact_ext || '').toUpperCase();
           const icon = ext === 'OBJ' ? '🧊' : ext === 'CSV' ? '📊' : ext === 'MD' ? '📝' : ext === 'PY' ? '🐍' : '📄';
-          artLink = `<a href="${t.artifact_url}" target="_blank" class="text-sky-400 hover:underline font-mono text-[11px] inline-flex items-center gap-1">${icon} ${t.artifact_filename}</a>`;
+          artLink = `
+            <div class="flex items-center gap-2">
+              <button onclick="previewArtifact('${t.artifact_filename}', '${t.artifact_url}', '${ext}')" 
+                      class="px-2.5 py-1 bg-sky-600/30 hover:bg-sky-500/50 border border-sky-500/40 text-sky-300 rounded text-[11px] font-semibold flex items-center gap-1 transition shadow-sm">
+                <span>👁️</span> Preview
+              </button>
+              <a href="${t.artifact_url}" download class="text-slate-400 hover:text-slate-200 text-[11px] font-mono flex items-center gap-1">
+                <span>${icon}</span> ${t.artifact_filename}
+              </a>
+            </div>
+          `;
         }
         return `
           <tr class="hover:bg-slate-700/30">
@@ -903,6 +1002,181 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       loadMistakes();
       loadSkills();
       loadTools();
+    }
+
+    let threeScene, threeCamera, threeRenderer, threeControls, currentObj;
+
+    function initThree() {
+      const container = document.getElementById('three-container');
+      if (threeRenderer) return;
+
+      threeScene = new THREE.Scene();
+      threeScene.background = new THREE.Color(0x0a0f1d);
+
+      threeCamera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 1000);
+      threeCamera.position.set(0, 2, 5);
+
+      threeRenderer = new THREE.WebGLRenderer({ antialias: true });
+      threeRenderer.setSize(container.clientWidth, container.clientHeight);
+      threeRenderer.setPixelRatio(window.devicePixelRatio);
+      container.appendChild(threeRenderer.domElement);
+
+      threeControls = new THREE.OrbitControls(threeCamera, threeRenderer.domElement);
+      threeControls.enableDamping = true;
+      threeControls.dampingFactor = 0.05;
+
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.85);
+      threeScene.add(ambientLight);
+
+      const dirLight1 = new THREE.DirectionalLight(0x38bdf8, 1.2);
+      dirLight1.position.set(5, 10, 7);
+      threeScene.add(dirLight1);
+
+      const dirLight2 = new THREE.DirectionalLight(0xec4899, 0.6);
+      dirLight2.position.set(-5, -5, -5);
+      threeScene.add(dirLight2);
+
+      const grid = new THREE.GridHelper(10, 20, 0x1e293b, 0x0f172a);
+      grid.position.y = -1;
+      threeScene.add(grid);
+
+      function animate() {
+        requestAnimationFrame(animate);
+        threeControls.update();
+        threeRenderer.render(threeScene, threeCamera);
+      }
+      animate();
+
+      window.addEventListener('resize', () => {
+        if (!container.clientWidth) return;
+        threeCamera.aspect = container.clientWidth / container.clientHeight;
+        threeCamera.updateProjectionMatrix();
+        threeRenderer.setSize(container.clientWidth, container.clientHeight);
+      });
+    }
+
+    async function previewArtifact(filename, url, ext) {
+      const modal = document.getElementById('preview-modal');
+      const title = document.getElementById('modal-title');
+      const badge = document.getElementById('modal-badge');
+      const icon = document.getElementById('modal-icon');
+      const downloadBtn = document.getElementById('modal-download');
+      
+      const threeBox = document.getElementById('three-container');
+      const csvBox = document.getElementById('csv-container');
+      const codeBox = document.getElementById('code-container');
+
+      title.innerText = filename;
+      downloadBtn.href = url;
+      modal.classList.remove('hidden');
+
+      threeBox.classList.add('hidden');
+      csvBox.classList.add('hidden');
+      codeBox.classList.add('hidden');
+
+      const uExt = (ext || '').toUpperCase();
+      if (uExt === 'OBJ') {
+        icon.innerText = '🧊';
+        badge.innerText = '3D Wavefront OBJ Mesh';
+        badge.className = 'ml-2 px-2.5 py-0.5 text-[10px] font-semibold rounded bg-sky-500/20 text-sky-400 border border-sky-500/30';
+        threeBox.classList.remove('hidden');
+        document.getElementById('three-loading').classList.remove('hidden');
+        
+        setTimeout(() => {
+          initThree();
+          if (currentObj) threeScene.remove(currentObj);
+
+          const loader = new THREE.OBJLoader();
+          loader.load(url, function (obj) {
+            let vCount = 0;
+            let fCount = 0;
+            const mat = new THREE.MeshStandardMaterial({
+              color: 0x94a3b8,
+              metalness: 0.65,
+              roughness: 0.25,
+            });
+            obj.traverse(function (child) {
+              if (child.isMesh) {
+                child.material = mat;
+                if (child.geometry) {
+                  vCount += child.geometry.attributes.position ? child.geometry.attributes.position.count : 0;
+                  fCount += child.geometry.index ? child.geometry.index.count / 3 : (child.geometry.attributes.position ? child.geometry.attributes.position.count / 3 : 0);
+                }
+              }
+            });
+
+            const box = new THREE.Box3().setFromObject(obj);
+            const center = box.getCenter(new THREE.Vector3());
+            const size = box.getSize(new THREE.Vector3());
+            obj.position.sub(center);
+
+            const maxDim = Math.max(size.x, size.y, size.z) || 1;
+            threeCamera.position.set(0, maxDim * 0.9, maxDim * 2.2);
+            threeControls.target.set(0, 0, 0);
+
+            threeScene.add(obj);
+            currentObj = obj;
+
+            document.getElementById('three-stats').innerText = `Vertices: ${vCount.toLocaleString()} · Faces: ${Math.round(fCount).toLocaleString()}`;
+            document.getElementById('three-loading').classList.add('hidden');
+          }, undefined, function (err) {
+            document.getElementById('three-loading').innerText = 'Failed to parse 3D mesh: ' + err;
+          });
+        }, 120);
+
+      } else if (uExt === 'CSV') {
+        icon.innerText = '📊';
+        badge.innerText = 'CSV Dataset (RFC 4180)';
+        badge.className = 'ml-2 px-2.5 py-0.5 text-[10px] font-semibold rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30';
+        csvBox.classList.remove('hidden');
+        csvBox.innerHTML = '<div class="text-center p-8 text-slate-500">Loading dataset...</div>';
+        
+        try {
+          const res = await fetch(url);
+          const raw = await res.text();
+          const rows = raw.trim().split('\\n').map(r => r.split(','));
+          if (!rows.length) {
+            csvBox.innerHTML = '<div class="text-center p-8 text-slate-500">Empty dataset</div>';
+            return;
+          }
+          const headers = rows[0];
+          const dataRows = rows.slice(1);
+          let html = `<div class="border border-slate-800 rounded-lg overflow-hidden shadow-inner">
+            <table class="w-full text-left divide-y divide-slate-800 text-xs">
+              <thead class="bg-slate-900 text-sky-400 uppercase tracking-wider text-[11px] font-bold sticky top-0">
+                <tr>${headers.map(h => `<th class="p-3 border-r border-slate-800 last:border-0">${h.trim()}</th>`).join('')}</tr>
+              </thead>
+              <tbody class="divide-y divide-slate-800/60 font-mono text-slate-300">
+                ${dataRows.map(row => `<tr class="hover:bg-slate-800/40">${row.map(c => `<td class="p-2.5 border-r border-slate-800/40 last:border-0">${c.trim()}</td>`).join('')}</tr>`).join('')}
+              </tbody>
+            </table>
+          </div>
+          <div class="pt-2 text-[11px] text-slate-400 font-mono">Total rows: ${dataRows.length} · Columns: ${headers.length}</div>`;
+          csvBox.innerHTML = html;
+        } catch (e) {
+          csvBox.innerHTML = '<div class="text-rose-400 p-4">Error loading CSV: ' + e + '</div>';
+        }
+
+      } else {
+        // Code (.py) or Markdown (.md)
+        icon.innerText = uExt === 'PY' ? '🐍' : '📝';
+        badge.innerText = uExt === 'PY' ? 'Python Source Code' : 'Markdown Analysis Report';
+        badge.className = uExt === 'PY' ? 'ml-2 px-2.5 py-0.5 text-[10px] font-semibold rounded bg-amber-500/20 text-amber-400 border border-amber-500/30' : 'ml-2 px-2.5 py-0.5 text-[10px] font-semibold rounded bg-purple-500/20 text-purple-400 border border-purple-500/30';
+        codeBox.classList.remove('hidden');
+        codeBox.innerText = 'Loading file contents...';
+
+        try {
+          const res = await fetch(url);
+          const raw = await res.text();
+          codeBox.innerText = raw;
+        } catch (e) {
+          codeBox.innerText = 'Error loading file: ' + e;
+        }
+      }
+    }
+
+    function closePreviewModal() {
+      document.getElementById('preview-modal').classList.add('hidden');
     }
 
     window.onload = () => {
