@@ -545,7 +545,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     <!-- Navigation Tabs -->
     <div class="border-b border-slate-700 flex gap-4 text-xs font-semibold text-slate-400">
-      <button onclick="switchTab('tab-tasks')" class="tab-btn pb-2 border-b-2 border-sky-400 text-sky-400" id="btn-tasks">📋 Task Lifecycle & 3D Assets</button>
+      <button onclick="switchTab('tab-tasks')" class="tab-btn pb-2 border-b-2 border-sky-400 text-sky-400" id="btn-tasks">📋 Task Lifecycle & Artifacts</button>
+      <button onclick="switchTab('tab-agents')" class="tab-btn pb-2 hover:text-slate-200" id="btn-agents">🤖 Registered Agents (Gate A)</button>
       <button onclick="switchTab('tab-config')" class="tab-btn pb-2 hover:text-slate-200" id="btn-config">⚙️ Iteration & Quota Config</button>
       <button onclick="switchTab('tab-mistakes')" class="tab-btn pb-2 hover:text-slate-200" id="btn-mistakes">🧠 Episodic Mistake Memory</button>
       <button onclick="switchTab('tab-skills')" class="tab-btn pb-2 hover:text-slate-200" id="btn-skills">✨ Skill Bank Catalog</button>
@@ -563,13 +564,25 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               <th class="p-2.5">Goal</th>
               <th class="p-2.5">State</th>
               <th class="p-2.5">Attempts</th>
-              <th class="p-2.5">Output 3D Asset</th>
+              <th class="p-2.5">Output Artifact</th>
             </tr>
           </thead>
           <tbody id="tasks-table-body" class="divide-y divide-slate-700/60">
             <tr><td colspan="5" class="p-4 text-center text-slate-500">Loading tasks...</td></tr>
           </tbody>
         </table>
+      </div>
+    </div>
+
+    <!-- Tab: Agents (Gate A) -->
+    <div id="tab-agents" class="tab-content hidden bg-slate-800/60 border border-slate-700 rounded-xl p-5 space-y-3">
+      <div class="flex items-center justify-between">
+        <h2 class="text-base font-bold text-slate-100">Registered Specialized Agents (Gate A: AT-A-01 to AT-A-06)</h2>
+        <span class="text-xs bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2.5 py-1 rounded-full font-mono">Immutable Provenance Hashing Active</span>
+      </div>
+      <p class="text-xs text-slate-400">Multi-agent registry enforcing per-agent manifests, allowed organ whitelists, and fail-closed PDP capability gates.</p>
+      <div id="agents-container" class="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2">
+        <p class="text-xs text-slate-500">Loading agents...</p>
       </div>
     </div>
 
@@ -676,10 +689,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         const data = await res.json();
         title.innerText = `✓ Task Completed: ${data.state} (Took ${data.attempts_taken} attempt(s))`;
         title.className = data.success ? 'font-bold text-emerald-400' : 'font-bold text-rose-400';
-        detail.innerText = `Model: ${data.model || model} · 3D Asset: ${data.artifact_path || 'None'} (${data.artifact_size_bytes} bytes).`;
+        detail.innerText = `Model: ${data.model || model} · Domain: ${data.domain || 'general'} · Artifact: ${data.artifact_filename || 'None'} (${data.artifact_size_bytes} bytes).`;
         
         if (data.download_url) {
-          linkDiv.innerHTML = `<a href="${data.download_url}" target="_blank" class="text-sky-400 underline font-semibold text-[11px]">📥 Download Generated 3D OBJ (${data.artifact_size_bytes} bytes)</a>`;
+          linkDiv.innerHTML = `<a href="${data.download_url}" target="_blank" class="text-sky-400 underline font-semibold text-[11px]">📥 Download Artifact (${data.artifact_filename || 'File'} · ${data.artifact_size_bytes} bytes)</a>`;
         }
         if (data.gui_launch && data.gui_launch.pid) {
           detail.innerText += ` [Blender 4.5 GUI opened on desktop - PID: ${data.gui_launch.pid}]`;
@@ -832,9 +845,30 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       `).join('');
     }
 
+    async function loadAgents() {
+      const res = await fetch('/api/agents');
+      const agents = await res.json();
+      const c = document.getElementById('agents-container');
+      if (!c) return;
+      c.innerHTML = agents.map(a => `
+        <div class="bg-slate-900/80 border border-slate-700 rounded-lg p-3 space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="font-bold text-xs text-sky-400">${a.name}</span>
+            <span class="text-[10px] px-2 py-0.5 rounded font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">${a.status}</span>
+          </div>
+          <p class="text-[11px] text-slate-300">${a.manifest.description || ''}</p>
+          <div class="pt-1 text-[10px] space-y-1 text-slate-400 font-mono">
+            <div>ID: <span class="text-slate-200">${a.id}</span> (v${a.current_version})</div>
+            <div>Allowed Organs: <span class="text-emerald-400">${(a.manifest.allowed_organs || []).join(', ')}</span></div>
+          </div>
+        </div>
+      `).join('');
+    }
+
     function refreshAll() {
       loadTelemetry();
       loadTasks();
+      loadAgents();
       loadMistakes();
       loadSkills();
       loadTools();
