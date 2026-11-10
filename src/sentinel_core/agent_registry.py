@@ -225,6 +225,23 @@ class AgentRegistry:
             published_by=row["published_by"],
         )
 
+    def list_releases(self, agent_id: str) -> list[dict[str, Any]]:
+        """Lists all immutable releases for a given agent ordered by published_at DESC."""
+        rows = self.db.execute_read(
+            "SELECT * FROM agent_releases WHERE agent_id = ? ORDER BY published_at DESC",
+            (agent_id,),
+        )
+        result = []
+        for r in rows:
+            d = dict(r)
+            if isinstance(d.get("manifest_snapshot"), str):
+                try:
+                    d["manifest_snapshot"] = json.loads(d["manifest_snapshot"])
+                except Exception:
+                    pass
+            result.append(d)
+        return result
+
     def list_agents(self, status: AgentState | None = None) -> list[dict[str, Any]]:
         """Lists registered agents with manifest and status (AT-A-06)."""
         if status:

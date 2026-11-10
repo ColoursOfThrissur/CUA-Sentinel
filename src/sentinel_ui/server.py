@@ -74,9 +74,12 @@ register_motor_organs(tool_registry)
 register_blender_organs(tool_registry)
 register_data_organs(tool_registry)
 
+# Agent Registry & Standard Gate A Agents
+agent_registry = AgentRegistry(db)
+
 # Broker & Fenced PDP Policy Decision Point (AT-A-05, AT-B-07 to AT-B-10)
 side_effects = SideEffectLedger(db)
-pdp = PolicyDecisionPoint(state_machine.leases, tool_registry)
+pdp = PolicyDecisionPoint(state_machine.leases, tool_registry, agent_registry)
 broker = ExecutionBroker(pdp, tool_registry, side_effects)
 
 # AppContainer Host Bridge (Windows 11 isolation runtime)
@@ -90,7 +93,6 @@ if (staging_dir / "python.exe").exists():
         logger.warning("Could not initialize AppContainerHost: %s", e)
 
 pilot = AdaptivePilotController(state_machine, verification_gate, mistake_memory, skill_bank)
-agent_registry = AgentRegistry(db)
 
 
 def init_standard_agents():
@@ -158,6 +160,32 @@ class TaskDispatchRequest(BaseModel):
     launch_gui: bool = False
     max_attempts: int | None = None
     model: str | None = None
+    agent_id: str | None = None
+
+
+class AgentPublishRequest(BaseModel):
+    agent_id: str
+    version: str
+    publisher: str = "Operator"
+
+
+class AgentDraftRequest(BaseModel):
+    agent_id: str
+    name: str
+    version: str = "1.0.0"
+    description: str = ""
+    author: str = "Operator"
+    capabilities: list[str] = []
+    allowed_organs: list[str] = []
+    denied_tools: list[str] = []
+    allow_irreversible: bool = False
+    max_memory_mb: int = 100
+    max_cpu_percent: float = 12.5
+
+
+class AgentActionRequest(BaseModel):
+    agent_id: str
+    reason: str = ""
 
 
 class ExecuteSkillRequest(BaseModel):
@@ -298,6 +326,61 @@ def list_agents():
     return agent_registry.list_agents()
 
 
+@app.post("/api/agents/publish")
+def api_publish_agent(req: AgentPublishRequest):
+    try:
+        release = agent_registry.publish_release(
+            agent_id=req.agent_id,
+            version=req.version,
+            publisher=req.publisher,
+        )
+        return {
+            "success": True,
+            "agent_id": req.agent_id,
+            "version": req.version,
+            "provenance_hash": release.provenance_hash,
+            "published_at": release.published_at,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/agents/draft")
+def api_register_draft(req: AgentDraftRequest):
+    try:
+        manifest = AgentManifest(
+            agent_id=req.agent_id,
+            name=req.name,
+            version=req.version,
+            description=req.description,
+            author=req.author,
+            capabilities=req.capabilities,
+            allowed_organs=req.allowed_organs,
+            denied_tools=req.denied_tools,
+            allow_irreversible=req.allow_irreversible,
+            max_memory_mb=req.max_memory_mb,
+            max_cpu_percent=req.max_cpu_percent,
+        )
+        agent = agent_registry.register_draft(manifest)
+        return {"success": True, "agent": agent}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/agents/{agent_id}/releases")
+def api_get_agent_releases(agent_id: str):
+    return agent_registry.list_releases(agent_id)
+
+
+@app.post("/api/agents/deprecate")
+def api_deprecate_agent(req: AgentActionRequest):
+    try:
+        agent = agent_registry.deprecate_agent(req.agent_id)
+        return {"success": True, "agent": agent}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @app.get("/api/side_effects")
 def list_side_effects():
     rows = db.execute_read("SELECT * FROM side_effect_ledger ORDER BY id DESC LIMIT 50")
@@ -336,6 +419,18 @@ def dispatch_task(req: TaskDispatchRequest):
         ext = "md"
         min_sz = 20
 
+    # Determine Gate A Agent Identity
+    effective_agent = req.agent_id
+    if not effective_agent or effective_agent == "auto":
+        if domain == "3d":
+            effective_agent = "blender_artisan"
+        elif domain == "data":
+            effective_agent = "data_analyst"
+        elif domain == "code":
+            effective_agent = "code_engineer"
+        else:
+            effective_agent = "data_analyst"
+
     expected_artifact = workspaces_dir / f"{task_id}.{ext}"
 
     def worker_executor(g: str, attempt_num: int, anti_patterns: str):
@@ -349,15 +444,16 @@ def dispatch_task(req: TaskDispatchRequest):
 
         def run_tool_fenced(tool_name: str, params: dict):
             if config.isolation.use_appcontainer and appcontainer_host:
-                logger.info("Executing tool '%s' under AppContainer isolation fence", tool_name)
+                logger.info("Executing tool '%s' under AppContainer isolation fence for agent '%s'", tool_name, effective_agent)
             call_res = broker.dispatch_call(
                 attempt_id=att_id,
                 lease_token=lease,
                 tool_name=tool_name,
                 params=params,
+                context={"agent_id": effective_agent, "allow_irreversible": config.policy.allow_irreversible},
             )
             if not call_res.get("allowed", False):
-                raise PermissionError(f"PDP Denied Tool '{tool_name}': {call_res.get('error')}")
+                raise PermissionError(f"PDP Denied Tool '{tool_name}' for Agent '{effective_agent}': {call_res.get('error')}")
             return call_res.get("result", {})
 
         if domain == "3d":
@@ -499,6 +595,7 @@ def dispatch_task(req: TaskDispatchRequest):
         "goal": goal,
         "domain": domain,
         "model": selected_model,
+        "agent_id": effective_agent,
         "state": result.task.state.value,
         "attempts_taken": result.attempts_taken,
         "success": result.success,
@@ -549,7 +646,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <span class="text-[11px] text-slate-400">Connected to Real Blender 4.5 & Windows Motor Organs</span>
       </div>
 
-      <div class="flex gap-2">
+      <div class="flex flex-wrap md:flex-nowrap gap-2">
+        <select id="select-agent" class="bg-slate-950 border border-slate-700 text-emerald-400 rounded-lg px-3 py-2 text-xs font-semibold outline-none">
+          <option value="auto" selected>🤖 Auto-Detect Agent</option>
+          <option value="blender_artisan">🎨 Blender Artisan (3D)</option>
+          <option value="data_analyst">📊 Data Analyst (CSV)</option>
+          <option value="code_engineer">💻 Code Engineer (Python)</option>
+        </select>
         <select id="select-model" class="bg-slate-950 border border-slate-700 text-sky-400 rounded-lg px-3 py-2 text-xs font-semibold outline-none">
           <option value="qwen3.5:9b" selected>🧠 Qwen 3.5 (9B) [Active]</option>
           <option value="qwen3:14b-q4_K_M">🧠 Qwen 3 (14B Q4)</option>
@@ -649,14 +752,23 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- Tab: Agents (Gate A) -->
-    <div id="tab-agents" class="tab-content hidden bg-slate-800/60 border border-slate-700 rounded-xl p-5 space-y-3">
-      <div class="flex items-center justify-between">
-        <h2 class="text-base font-bold text-slate-100">Registered Specialized Agents (Gate A: AT-A-01 to AT-A-06)</h2>
-        <span class="text-xs bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2.5 py-1 rounded-full font-mono">Immutable Provenance Hashing Active</span>
+    <!-- Tab: Agents (Gate A Studio) -->
+    <div id="tab-agents" class="tab-content hidden bg-slate-800/60 border border-slate-700 rounded-xl p-5 space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-700/80 pb-3">
+        <div>
+          <h2 class="text-base font-bold text-slate-100 flex items-center gap-2">
+            <span>🤖</span> Agent Studio & Capability Governance (Gate A)
+          </h2>
+          <p class="text-xs text-slate-400 mt-0.5">Manage specialized agents, verify SHA-256 provenance hashes, and publish immutable releases.</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <button onclick="openAgentDraftModal()" class="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-xs font-semibold text-white rounded-lg transition flex items-center gap-1.5 shadow-sm">
+            <span>➕</span> New Agent Draft
+          </button>
+        </div>
       </div>
-      <p class="text-xs text-slate-400">Multi-agent registry enforcing per-agent manifests, allowed organ whitelists, and fail-closed PDP capability gates.</p>
-      <div id="agents-container" class="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2">
+      
+      <div id="agents-container" class="grid grid-cols-1 md:grid-cols-3 gap-4 pt-1">
         <p class="text-xs text-slate-500">Loading agents...</p>
       </div>
     </div>
@@ -775,6 +887,96 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- Agent Draft Modal (Gate A Studio) -->
+  <div id="agent-draft-modal" class="fixed inset-0 z-50 bg-black/85 backdrop-blur-md hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-xl flex flex-col shadow-2xl overflow-hidden">
+      <div class="px-5 py-3 border-b border-slate-800 flex items-center justify-between bg-slate-950/80">
+        <h3 class="text-sm font-bold text-emerald-400 flex items-center gap-2">
+          <span>➕</span> Register New Agent Draft (Gate A: AT-A-01)
+        </h3>
+        <button onclick="closeAgentModals()" class="text-slate-400 hover:text-white text-base font-bold">✕</button>
+      </div>
+      <div class="p-5 space-y-3.5 text-xs">
+        <div class="grid grid-cols-2 gap-3">
+          <div class="space-y-1">
+            <label class="text-slate-300 font-medium">Agent Unique ID</label>
+            <input id="draft-id" type="text" placeholder="e.g. security_auditor" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 font-mono text-slate-100 outline-none focus:border-emerald-500">
+          </div>
+          <div class="space-y-1">
+            <label class="text-slate-300 font-medium">Display Name</label>
+            <input id="draft-name" type="text" placeholder="e.g. Security Vulnerability Auditor" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-slate-100 outline-none focus:border-emerald-500">
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div class="space-y-1">
+            <label class="text-slate-300 font-medium">Initial Version</label>
+            <input id="draft-version" type="text" value="1.0.0" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 font-mono text-slate-100 outline-none focus:border-emerald-500">
+          </div>
+          <div class="space-y-1">
+            <label class="text-slate-300 font-medium">Author</label>
+            <input id="draft-author" type="text" value="Sentinel Operator" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-slate-100 outline-none focus:border-emerald-500">
+          </div>
+        </div>
+        <div class="space-y-1">
+          <label class="text-slate-300 font-medium">Description</label>
+          <textarea id="draft-desc" rows="2" placeholder="Responsibilities and behavioral domain of this agent..." class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-slate-100 outline-none focus:border-emerald-500"></textarea>
+        </div>
+        <div class="space-y-1.5">
+          <label class="text-slate-300 font-medium">Allowed Organs Whitelist (PDP Capability Gate)</label>
+          <div class="grid grid-cols-2 gap-2 p-2 bg-slate-950 border border-slate-800 rounded-lg text-[11px]">
+            <label class="flex items-center gap-2 cursor-pointer text-slate-300">
+              <input type="checkbox" value="python_sandbox_run" checked class="organ-checkbox rounded bg-slate-900 border-slate-700 text-emerald-500">
+              <span>python_sandbox_run</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer text-slate-300">
+              <input type="checkbox" value="csv_analyze_and_report" checked class="organ-checkbox rounded bg-slate-900 border-slate-700 text-emerald-500">
+              <span>csv_analyze_and_report</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer text-slate-300">
+              <input type="checkbox" value="file_transform" class="organ-checkbox rounded bg-slate-900 border-slate-700 text-emerald-500">
+              <span>file_transform</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer text-slate-300">
+              <input type="checkbox" value="blender_run_python" class="organ-checkbox rounded bg-slate-900 border-slate-700 text-emerald-500">
+              <span>blender_run_python</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer text-slate-300">
+              <input type="checkbox" value="windows_command" class="organ-checkbox rounded bg-slate-900 border-slate-700 text-emerald-500">
+              <span>windows_command</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer text-slate-300">
+              <input type="checkbox" value="window_inspect" class="organ-checkbox rounded bg-slate-900 border-slate-700 text-emerald-500">
+              <span>window_inspect</span>
+            </label>
+          </div>
+        </div>
+        <div class="flex items-center justify-between pt-1">
+          <label class="flex items-center gap-2 cursor-pointer text-slate-300">
+            <input type="checkbox" id="draft-irreversible" class="rounded bg-slate-900 border-slate-700 text-emerald-500">
+            <span>Allow Irreversible Operations</span>
+          </label>
+          <div class="flex items-center gap-2">
+            <button onclick="closeAgentModals()" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-300 transition">Cancel</button>
+            <button onclick="saveAgentDraft()" class="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 font-bold text-white rounded-lg transition shadow">Save Draft</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Agent Releases History Modal -->
+  <div id="agent-releases-modal" class="fixed inset-0 z-50 bg-black/85 backdrop-blur-md hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-2xl max-h-[85vh] flex flex-col shadow-2xl overflow-hidden">
+      <div class="px-5 py-3 border-b border-slate-800 flex items-center justify-between bg-slate-950/80">
+        <h3 id="releases-modal-title" class="text-sm font-bold text-sky-400 font-mono">Agent Releases</h3>
+        <button onclick="closeAgentModals()" class="text-slate-400 hover:text-white text-base font-bold">✕</button>
+      </div>
+      <div id="releases-modal-list" class="flex-1 overflow-auto p-4 space-y-3 bg-slate-900">
+        <p class="text-xs text-slate-500">Loading releases...</p>
+      </div>
+    </div>
+  </div>
+
   <script>
     function setPrompt(text) {
       document.getElementById('prompt-input').value = text;
@@ -787,6 +989,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
       const launchGui = document.getElementById('check-launch-gui').checked;
       const model = document.getElementById('select-model').value;
+      const agentId = document.getElementById('select-agent') ? document.getElementById('select-agent').value : 'auto';
       const btn = document.getElementById('dispatch-btn');
       const card = document.getElementById('live-status-card');
       const title = document.getElementById('live-status-title');
@@ -797,19 +1000,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       btn.innerText = '⏳ Executing...';
       card.classList.remove('hidden');
       title.innerText = '⚡ Executing task: ' + goal;
-      detail.innerText = `Brain: ${model} synthesizing Blender 4.5 Python bpy script...`;
+      detail.innerText = `Agent: [${agentId}] · Model: ${model} synthesizing solution...`;
       linkDiv.innerHTML = '';
 
       try {
         const res = await fetch('/api/tasks/dispatch', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ goal: goal, launch_gui: launchGui, model: model })
+          body: JSON.stringify({ goal: goal, launch_gui: launchGui, model: model, agent_id: agentId })
         });
         const data = await res.json();
         title.innerText = `✓ Task Completed: ${data.state} (Took ${data.attempts_taken} attempt(s))`;
         title.className = data.success ? 'font-bold text-emerald-400' : 'font-bold text-rose-400';
-        detail.innerText = `Model: ${data.model || model} · Domain: ${data.domain || 'general'} · Artifact: ${data.artifact_filename || 'None'} (${data.artifact_size_bytes} bytes).`;
+        detail.innerText = `Agent: ${data.agent_id || agentId} · Model: ${data.model || model} · Domain: ${data.domain || 'general'} · Artifact: ${data.artifact_filename || 'None'} (${data.artifact_size_bytes} bytes).`;
         
         if (data.download_url) {
           linkDiv.innerHTML = `<a href="${data.download_url}" target="_blank" class="text-sky-400 underline font-semibold text-[11px]">📥 Download Artifact (${data.artifact_filename || 'File'} · ${data.artifact_size_bytes} bytes)</a>`;
@@ -980,19 +1183,209 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const agents = await res.json();
       const c = document.getElementById('agents-container');
       if (!c) return;
-      c.innerHTML = agents.map(a => `
-        <div class="bg-slate-900/80 border border-slate-700 rounded-lg p-3 space-y-2">
-          <div class="flex items-center justify-between">
-            <span class="font-bold text-xs text-sky-400">${a.name}</span>
-            <span class="text-[10px] px-2 py-0.5 rounded font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">${a.status}</span>
+
+      const selectAgent = document.getElementById('select-agent');
+      if (selectAgent) {
+        const curVal = selectAgent.value;
+        selectAgent.innerHTML = `
+          <option value="auto">🤖 Auto-Detect Agent</option>
+          ${agents.map(a => `<option value="${a.id}">${a.name} (${(a.manifest.capabilities || [])[0] || 'general'})</option>`).join('')}
+        `;
+        selectAgent.value = curVal || 'auto';
+      }
+
+      if (agents.length === 0) {
+        c.innerHTML = '<p class="text-xs text-slate-500">No agents registered.</p>';
+        return;
+      }
+
+      c.innerHTML = agents.map(a => {
+        const isDraft = a.status === 'Draft';
+        const isPub = a.status === 'Published';
+        const statusBadge = isPub 
+          ? '<span class="text-[10px] px-2.5 py-0.5 rounded font-mono font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">✓ Published</span>'
+          : isDraft
+          ? '<span class="text-[10px] px-2.5 py-0.5 rounded font-mono font-semibold bg-amber-500/20 text-amber-400 border border-amber-500/30">✎ Draft</span>'
+          : '<span class="text-[10px] px-2.5 py-0.5 rounded font-mono font-semibold bg-rose-500/20 text-rose-400 border border-rose-500/30">⛔ ' + a.status + '</span>';
+
+        const organs = (a.manifest.allowed_organs || []).map(o => 
+          `<span class="px-2 py-0.5 bg-slate-950 border border-slate-700/80 rounded text-[10px] font-mono text-sky-300">${o}</span>`
+        ).join(' ');
+
+        return `
+          <div class="bg-slate-900/90 border border-slate-700/80 rounded-xl p-4 space-y-3 shadow-md hover:border-slate-600 transition flex flex-col justify-between">
+            <div class="space-y-2">
+              <div class="flex items-start justify-between gap-2">
+                <div>
+                  <h3 class="font-bold text-sm text-slate-100 flex items-center gap-1.5">
+                    <span>🤖</span> ${a.name}
+                  </h3>
+                  <p class="text-[11px] font-mono text-slate-400 mt-0.5">${a.id} · <span class="text-sky-400 font-semibold">v${a.current_version}</span></p>
+                </div>
+                ${statusBadge}
+              </div>
+
+              <p class="text-xs text-slate-300 leading-relaxed">${a.manifest.description || 'Specialized autonomous agent.'}</p>
+
+              <!-- Capability Whitelist -->
+              <div class="space-y-1 pt-1">
+                <span class="text-[10px] uppercase tracking-wider font-semibold text-slate-400">PDP Allowed Organs:</span>
+                <div class="flex flex-wrap gap-1 pt-0.5">
+                  ${organs || '<span class="text-[10px] text-slate-500">None</span>'}
+                </div>
+              </div>
+
+              <!-- Resource Caps -->
+              <div class="flex items-center gap-3 text-[10px] text-slate-400 font-mono pt-1">
+                <span>Mem: <span class="text-slate-200">${a.manifest.max_memory_mb || 100}MB</span></span>
+                <span>CPU: <span class="text-slate-200">${a.manifest.max_cpu_percent || 12.5}%</span></span>
+                <span>Irreversible: <span class="${a.manifest.allow_irreversible ? 'text-amber-400 font-bold' : 'text-slate-400'}">${a.manifest.allow_irreversible ? 'ALLOWED' : 'DENIED'}</span></span>
+              </div>
+            </div>
+
+            <!-- Action Controls -->
+            <div class="pt-3 border-t border-slate-800/80 flex items-center justify-between gap-2">
+              <button onclick="viewAgentReleases('${a.id}', '${a.name}')" 
+                      class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-300 rounded text-[11px] font-semibold transition flex items-center gap-1">
+                <span>📜</span> Releases
+              </button>
+              
+              <div class="flex items-center gap-1.5">
+                ${isDraft ? `
+                  <button onclick="publishAgentRelease('${a.id}', '${a.current_version}')" 
+                          class="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[11px] font-bold shadow transition flex items-center gap-1">
+                    <span>🚀</span> Publish Release
+                  </button>
+                ` : `
+                  <span class="text-[10px] text-slate-500 font-mono">Immutable</span>
+                `}
+                ${a.status !== 'Deprecated' ? `
+                  <button onclick="deprecateAgent('${a.id}')" title="Deprecate Agent" class="px-2 py-1 text-slate-500 hover:text-rose-400 text-[11px] transition">⛔</button>
+                ` : ''}
+              </div>
+            </div>
           </div>
-          <p class="text-[11px] text-slate-300">${a.manifest.description || ''}</p>
-          <div class="pt-1 text-[10px] space-y-1 text-slate-400 font-mono">
-            <div>ID: <span class="text-slate-200">${a.id}</span> (v${a.current_version})</div>
-            <div>Allowed Organs: <span class="text-emerald-400">${(a.manifest.allowed_organs || []).join(', ')}</span></div>
+        `;
+      }).join('');
+    }
+
+    async function publishAgentRelease(agentId, version) {
+      if (!confirm(`Publish immutable release v${version} for agent '${agentId}'?\\nThis will compute a canonical SHA-256 provenance hash.`)) return;
+      try {
+        const res = await fetch('/api/agents/publish', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ agent_id: agentId, version: version, publisher: 'Sentinel Operator' })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          alert(`✓ Agent '${agentId}' v${version} published successfully!\\nProvenance SHA256: ${data.provenance_hash}`);
+          loadAgents();
+        } else {
+          alert('Error publishing release: ' + (data.detail || JSON.stringify(data)));
+        }
+      } catch (e) {
+        alert('Request failed: ' + e);
+      }
+    }
+
+    async function viewAgentReleases(agentId, agentName) {
+      const modal = document.getElementById('agent-releases-modal');
+      const title = document.getElementById('releases-modal-title');
+      const listDiv = document.getElementById('releases-modal-list');
+      title.innerText = `Releases & Provenance: ${agentName} (${agentId})`;
+      modal.classList.remove('hidden');
+      listDiv.innerHTML = '<p class="text-xs text-slate-500 p-4">Loading releases...</p>';
+
+      try {
+        const res = await fetch(`/api/agents/${agentId}/releases`);
+        const releases = await res.json();
+        if (!releases.length) {
+          listDiv.innerHTML = '<p class="text-xs text-slate-500 p-4">No immutable releases recorded yet.</p>';
+          return;
+        }
+        listDiv.innerHTML = releases.map(r => `
+          <div class="bg-slate-950 border border-slate-800 rounded-lg p-3 space-y-1.5">
+            <div class="flex items-center justify-between">
+              <span class="font-bold text-sky-400 text-xs font-mono">Release v${r.version}</span>
+              <span class="text-[10px] text-slate-400">${new Date(r.published_at * 1000).toLocaleString()} by ${r.published_by}</span>
+            </div>
+            <div class="space-y-0.5">
+              <span class="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">SHA-256 Provenance Hash (AT-A-02):</span>
+              <div class="bg-slate-900 px-2 py-1 rounded text-[11px] font-mono text-emerald-400 select-all break-all border border-slate-800">
+                ${r.provenance_hash}
+              </div>
+            </div>
+            <div class="text-[10px] text-slate-400">
+              Allowed Organs Snapshot: <span class="text-slate-300 font-mono">${(r.manifest_snapshot.allowed_organs || []).join(', ')}</span>
+            </div>
           </div>
-        </div>
-      `).join('');
+        `).join('');
+      } catch (e) {
+        listDiv.innerHTML = '<p class="text-rose-400 p-4 text-xs">Failed to load releases: ' + e + '</p>';
+      }
+    }
+
+    function openAgentDraftModal() {
+      document.getElementById('agent-draft-modal').classList.remove('hidden');
+    }
+
+    function closeAgentModals() {
+      document.getElementById('agent-draft-modal').classList.add('hidden');
+      document.getElementById('agent-releases-modal').classList.add('hidden');
+    }
+
+    async function saveAgentDraft() {
+      const agentId = document.getElementById('draft-id').value.trim();
+      const name = document.getElementById('draft-name').value.trim();
+      const version = document.getElementById('draft-version').value.trim() || '1.0.0';
+      const desc = document.getElementById('draft-desc').value.trim();
+      if (!agentId || !name) {
+        alert('Agent ID and Name are required.');
+        return;
+      }
+
+      const allowedOrgans = [];
+      document.querySelectorAll('.organ-checkbox:checked').forEach(cb => allowedOrgans.push(cb.value));
+
+      try {
+        const res = await fetch('/api/agents/draft', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            agent_id: agentId,
+            name: name,
+            version: version,
+            description: desc,
+            allowed_organs: allowedOrgans,
+            allow_irreversible: document.getElementById('draft-irreversible').checked
+          })
+        });
+        if (res.ok) {
+          closeAgentModals();
+          loadAgents();
+          alert(`✓ Draft agent '${name}' registered successfully!`);
+        } else {
+          const d = await res.json();
+          alert('Failed to register agent: ' + (d.detail || JSON.stringify(d)));
+        }
+      } catch (e) {
+        alert('Error: ' + e);
+      }
+    }
+
+    async function deprecateAgent(agentId) {
+      if (!confirm(`Are you sure you want to deprecate agent '${agentId}'?`)) return;
+      try {
+        await fetch('/api/agents/deprecate', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ agent_id: agentId })
+        });
+        loadAgents();
+      } catch (e) {
+        alert('Failed to deprecate: ' + e);
+      }
     }
 
     function refreshAll() {
