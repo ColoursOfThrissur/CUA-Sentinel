@@ -45,6 +45,8 @@ class AdaptivePilotController:
         verifier: Callable[[dict[str, Any]], VerificationResult],
         skill_distillation_name: str | None = None,
         max_attempts: int = 3,
+        domain: str = "",
+        llm_gateway: Any | None = None,
     ) -> PilotExecutionResult:
         """Executes a bounded pilot loop with automatic mistake capture and adaptive re-planning."""
         # 1. Initialize Task in State Machine
@@ -53,8 +55,8 @@ class AdaptivePilotController:
         distilled = None
 
         while True:
-            # 2. Check if we have previous mistakes to formulate negative prompt constraints
-            anti_patterns = self.mistake_memory.format_anti_pattern_prompt(task_id)
+            # 2. Check if we have previous mistakes or cross-task heuristics to formulate negative prompt constraints
+            anti_patterns = self.mistake_memory.format_anti_pattern_prompt(task_id, domain=domain)
 
             # 3. Start Next Attempt (allocates monotonic lease)
             task, lease = self.state_machine.start_next_attempt(task_id)
@@ -90,15 +92,25 @@ class AdaptivePilotController:
                     mistakes_encountered=self.mistake_memory.get_task_mistakes(task_id),
                 )
             else:
-                # 7b. Verification Failed -> Record Defect to Episodic Memory
-                self.mistake_memory.record_mistake(
-                    task_id=task_id,
-                    attempt_id=lease.attempt_id,
-                    error_category=v_res.error_category or "VERIFICATION_FAILURE",
-                    error_signature=v_res.error_signature or "UnknownDefect",
-                    context=v_res.details,
-                    lesson_learned=v_res.lesson or "Fix the defect according to verification rule.",
-                )
+                # 7b. Verification Failed -> Record Defect to Episodic Memory (with semantic LLM classification if available)
+                stderr_text = v_res.details.get("stderr") if isinstance(v_res.details, dict) else ""
+                if llm_gateway and stderr_text:
+                    self.mistake_memory.classify_and_record_semantic_mistake(
+                        task_id=task_id,
+                        attempt_id=lease.attempt_id,
+                        raw_traceback=stderr_text,
+                        llm_gateway=llm_gateway,
+                        domain=domain,
+                    )
+                else:
+                    self.mistake_memory.record_mistake(
+                        task_id=task_id,
+                        attempt_id=lease.attempt_id,
+                        error_category=v_res.error_category or "VERIFICATION_FAILURE",
+                        error_signature=v_res.error_signature or "UnknownDefect",
+                        context=v_res.details,
+                        lesson_learned=v_res.lesson or "Fix the defect according to verification rule.",
+                    )
 
                 # State Machine handles retry transition or terminal failure
                 task, can_retry = self.state_machine.handle_verification_failure(

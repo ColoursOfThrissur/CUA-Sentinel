@@ -85,10 +85,35 @@ CREATE TABLE IF NOT EXISTS skills (
     metadata TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS agents (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    current_version TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('Draft', 'Validating', 'Published', 'Deprecated', 'Revoked')),
+    manifest_json TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_releases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id TEXT NOT NULL,
+    version TEXT NOT NULL,
+    provenance_hash TEXT NOT NULL,
+    manifest_snapshot TEXT NOT NULL,
+    code_payload TEXT,
+    published_at REAL NOT NULL,
+    published_by TEXT NOT NULL,
+    UNIQUE(agent_id, version),
+    FOREIGN KEY(agent_id) REFERENCES agents(id) ON DELETE CASCADE
+);
+
 -- Indexes for rapid recovery and fencing queries
 CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state);
 CREATE INDEX IF NOT EXISTS idx_attempts_task_id ON attempts(task_id);
 CREATE INDEX IF NOT EXISTS idx_attempts_lease ON attempts(lease_token);
 CREATE INDEX IF NOT EXISTS idx_side_effects_attempt ON side_effect_ledger(attempt_id);
 CREATE INDEX IF NOT EXISTS idx_mistakes_signature ON mistake_ledger(error_signature);
+CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
+CREATE INDEX IF NOT EXISTS idx_agent_releases_agent ON agent_releases(agent_id, version);
 """

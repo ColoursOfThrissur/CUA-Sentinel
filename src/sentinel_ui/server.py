@@ -25,6 +25,7 @@ from sentinel_core.config import SentinelConfig
 from sentinel_core.db import SentinelDB
 from sentinel_core.state_machine import StateMachine
 from sentinel_core.verification_gate import VerificationGate, VerificationResult
+from sentinel_core.agent_registry import AgentRegistry, AgentManifest
 from sentinel_adaptive.mistake_ledger import MistakeMemory
 from sentinel_adaptive.skill_bank import SkillBank
 from sentinel_broker.tool_registry import ToolRegistry
@@ -32,6 +33,7 @@ from sentinel_broker.organs.sensory import register_sensory_organs
 from sentinel_broker.organs.motor import register_motor_organs
 from sentinel_broker.organs.blender import register_blender_organs
 from sentinel_broker.organs.blender_prompts import synthesize_blender_script
+from sentinel_broker.organs.data_organ import register_data_organs
 from sentinel_core.llm_gateway import LLMGateway
 from sentinel_adaptive.pilot_controller import AdaptivePilotController
 
@@ -63,7 +65,59 @@ tool_registry = ToolRegistry()
 register_sensory_organs(tool_registry)
 register_motor_organs(tool_registry)
 register_blender_organs(tool_registry)
+register_data_organs(tool_registry)
 pilot = AdaptivePilotController(state_machine, verification_gate, mistake_memory, skill_bank)
+agent_registry = AgentRegistry(db)
+
+
+def init_standard_agents():
+    # 1. 3D Artisan
+    agent_registry.register_draft(AgentManifest(
+        agent_id="blender_artisan",
+        name="3D Procedural Artisan",
+        version="1.0.0",
+        description="Synthesizes procedural 3D meshes, shaders, and animations in Blender 4.5 LTS.",
+        author="Sentinel Biological Systems",
+        capabilities=["3d:mesh", "3d:bpy", "3d:render"],
+        allowed_organs=["blender_run_python", "blender_launch_gui"],
+    ))
+    try:
+        agent_registry.publish_release("blender_artisan", "1.0.0", publisher="Sentinel Core")
+    except Exception:
+        pass
+
+    # 2. Data Analyst
+    agent_registry.register_draft(AgentManifest(
+        agent_id="data_analyst",
+        name="Data & Metrics Analyst",
+        version="1.0.0",
+        description="Analyzes CSV datasets, computes aggregations, and synthesizes analytical reports.",
+        author="Sentinel Biological Systems",
+        capabilities=["data:csv", "data:stats", "data:report"],
+        allowed_organs=["python_sandbox_run", "csv_analyze_and_report", "file_transform"],
+    ))
+    try:
+        agent_registry.publish_release("data_analyst", "1.0.0", publisher="Sentinel Core")
+    except Exception:
+        pass
+
+    # 3. Code Engineer
+    agent_registry.register_draft(AgentManifest(
+        agent_id="code_engineer",
+        name="Software Engineer",
+        version="1.0.0",
+        description="Synthesizes Python scripts, modules, algorithms, and executes sandboxed code.",
+        author="Sentinel Biological Systems",
+        capabilities=["code:python", "code:execution", "code:testing"],
+        allowed_organs=["python_sandbox_run", "windows_command"],
+    ))
+    try:
+        agent_registry.publish_release("code_engineer", "1.0.0", publisher="Sentinel Core")
+    except Exception:
+        pass
+
+
+init_standard_agents()
 
 
 class ConfigUpdateRequest(BaseModel):
@@ -173,7 +227,31 @@ def get_telemetry():
 @app.get("/api/tasks")
 def list_tasks():
     rows = db.execute_read("SELECT * FROM tasks ORDER BY created_at DESC LIMIT 50")
-    return [dict(r) for r in rows]
+    res = []
+    for r in rows:
+        d = dict(r)
+        tid = d["id"]
+        # Find matching artifact in workspaces_dir
+        matches = list(workspaces_dir.glob(f"{tid}.*"))
+        if matches:
+            # Pick primary artifact, prioritizing .obj, .csv, .md, .py, .txt over .mtl/.tmp
+            def art_priority(p: Path):
+                s = p.suffix.lower()
+                if s == '.obj': return 0
+                if s in ['.csv', '.md', '.py', '.txt']: return 1
+                return 2
+            art = sorted(matches, key=lambda p: (art_priority(p), -p.stat().st_mtime))[0]
+            d["artifact_filename"] = art.name
+            d["artifact_url"] = f"/workspaces/{art.name}"
+            d["artifact_size"] = art.stat().st_size
+            d["artifact_ext"] = art.suffix.lstrip(".").lower()
+        else:
+            d["artifact_filename"] = None
+            d["artifact_url"] = None
+            d["artifact_size"] = 0
+            d["artifact_ext"] = None
+        res.append(d)
+    return res
 
 
 @app.get("/api/mistakes")
@@ -192,6 +270,11 @@ def list_tools():
     return tool_registry.list_tools()
 
 
+@app.get("/api/agents")
+def list_agents():
+    return agent_registry.list_agents()
+
+
 @app.get("/api/side_effects")
 def list_side_effects():
     rows = db.execute_read("SELECT * FROM side_effect_ledger ORDER BY id DESC LIMIT 50")
@@ -200,77 +283,126 @@ def list_side_effects():
 
 @app.post("/api/tasks/dispatch")
 def dispatch_task(req: TaskDispatchRequest):
-    """Dispatches any custom user task or 3D model prompt to real Blender 4.5 and Windows organs."""
+    """Dispatches any custom user task across 3D, data, code, or report domains."""
     task_id = f"task_{int(time.time())}"
     goal = req.goal.strip()
     max_att = req.max_attempts or config.iteration_limits.max_attempts
     selected_model = req.model or config.llm.model
+    lower_goal = goal.lower()
 
-    is_3d_task = any(w in goal.lower() for w in [
+    if any(w in lower_goal for w in [
         "3d", "blender", "model", "sword", "mug", "spaceship", "tree", "chair", "monkey", "mesh",
         "build", "turret", "gatling", "cylinder", "cube", "sphere", "torus", "geometry", "sculpture",
         "gun", "barrel", "mount", "bracket", "pillar", "shaft", "car", "robot", "cannon", "shield",
-        "armor", "helmet", "ring", "table", "lamp", "building", "castle", "plane", "rifle", "dagger"
-    ])
-    target_obj = workspaces_dir / f"{task_id}.obj"
-    target_txt = workspaces_dir / f"{task_id}.txt"
-    expected_artifact = target_obj if is_3d_task else target_txt
+        "armor", "helmet", "ring", "table", "lamp", "building", "castle", "plane", "rifle", "dagger",
+        "warhammer"
+    ]):
+        domain = "3d"
+        ext = "obj"
+        min_sz = 100
+    elif any(w in lower_goal for w in ["csv", "table", "dataset", "dataframe", "rows", "columns", "spreadsheet", "sales"]):
+        domain = "data"
+        ext = "csv"
+        min_sz = 15
+    elif any(w in lower_goal for w in ["code", "python script", "function", "class", "algorithm", "program", "script", "write code"]):
+        domain = "code"
+        ext = "py"
+        min_sz = 15
+    else:
+        domain = "report"
+        ext = "md"
+        min_sz = 20
+
+    expected_artifact = workspaces_dir / f"{task_id}.{ext}"
 
     def worker_executor(g: str, attempt_num: int, anti_patterns: str):
-        if is_3d_task:
+        if domain == "3d":
             logger.info("Executing 3D synthesis via LLM (%s) attempt %d", selected_model, attempt_num)
             blender_script = synthesize_blender_script(
                 goal=goal,
-                output_obj_path=str(target_obj),
+                output_obj_path=str(expected_artifact),
                 anti_patterns=anti_patterns,
                 use_llm=True,
                 model=selected_model,
             )
             res = tool_registry.execute_tool("blender_run_python", {
                 "script_code": blender_script,
-                "output_obj_path": str(target_obj),
+                "output_obj_path": str(expected_artifact),
             })
             return {
                 "tool_result": res,
-                "artifact_path": str(target_obj),
+                "artifact_path": str(expected_artifact),
                 "synthesized_code": blender_script,
             }
-        else:
-            # Generic host execution with LLM reasoning
+        elif domain == "data":
+            logger.info("Executing Data synthesis via LLM (%s) attempt %d", selected_model, attempt_num)
             gw = LLMGateway(endpoint=config.llm.endpoint, default_model=selected_model)
-            if gw.is_available():
-                prompt_sys = (
-                    "You are Sentinel's autonomous agent. Directly and concisely solve the user's request. "
-                    "If system operations or code are requested, provide exact steps."
-                )
-                llm_response = gw.generate(prompt=goal, system=prompt_sys, model=selected_model)
-            else:
-                cmd_res = tool_registry.execute_tool("windows_command", {"command": f"Write-Output '{goal}'"})
-                llm_response = cmd_res.get("stdout", "")
+            out_path_str = str(expected_artifact).replace("\\", "/")
+            sys_inst = (
+                "You are Sentinel's Data Synthesizer. Write clean, self-contained Python 3 code using the standard library "
+                f"(csv, io, random, math, datetime) to generate the CSV dataset and write it directly to '{out_path_str}'.\n"
+                "Output ONLY executable Python code inside a ```python ``` block."
+            )
+            prompt_data = f"Goal: {goal}\nTarget Output CSV Path: '{out_path_str}'"
+            if anti_patterns:
+                prompt_data += f"\n[PREVIOUS ATTEMPT FAILED]:\n{anti_patterns}\nEnsure the CSV file is written to '{out_path_str}' with valid header and rows."
 
-            target_txt = workspaces_dir / f"{task_id}.txt"
-            target_txt.write_text(f"Task: {goal}\nModel: {selected_model}\nTimestamp: {time.ctime()}\n\n{llm_response}\n", encoding="utf-8")
-            return {
-                "tool_result": {"stdout": llm_response, "exit_code": 0},
-                "artifact_path": str(target_txt),
-            }
+            raw_code = gw.generate(prompt=prompt_data, system=sys_inst, model=selected_model)
+            py_code = gw.extract_python_code(raw_code)
+            res = tool_registry.execute_tool("python_sandbox_run", {
+                "script_code": py_code,
+                "output_artifact_path": str(expected_artifact),
+            })
+            # If the script printed the CSV to stdout instead of file, save stdout
+            if not expected_artifact.exists() and res.get("stdout") and "," in res.get("stdout"):
+                expected_artifact.write_text(res["stdout"].strip(), encoding="utf-8")
+
+            return {"tool_result": res, "artifact_path": str(expected_artifact), "synthesized_code": py_code}
+        elif domain == "code":
+            logger.info("Executing Code synthesis via LLM (%s) attempt %d", selected_model, attempt_num)
+            gw = LLMGateway(endpoint=config.llm.endpoint, default_model=selected_model)
+            sys_inst = (
+                "You are Sentinel's Code Synthesizer. Output ONLY clean, self-contained Python code inside a ```python ``` block. "
+                "Include docstrings, type annotations, and an example usage block."
+            )
+            prompt_code = f"Goal: {goal}"
+            if anti_patterns:
+                prompt_code += f"\n[PREVIOUS ATTEMPT FAILED]:\n{anti_patterns}\nFix the defect."
+            raw_code = gw.generate(prompt=prompt_code, system=sys_inst, model=selected_model)
+            py_code = gw.extract_python_code(raw_code)
+            expected_artifact.write_text(py_code, encoding="utf-8")
+            return {"tool_result": {"exit_code": 0, "stdout": "Code generated successfully"}, "artifact_path": str(expected_artifact), "synthesized_code": py_code}
+        else:
+            # Report / analysis domain (.md)
+            logger.info("Executing Report synthesis via LLM (%s) attempt %d", selected_model, attempt_num)
+            gw = LLMGateway(endpoint=config.llm.endpoint, default_model=selected_model)
+            sys_inst = (
+                "You are Sentinel's Autonomous Analyst. Provide a clear, structured, comprehensive Markdown report solving the user's task. "
+                "Use headings, bullet points, and data tables where helpful."
+            )
+            prompt_rep = f"Task: {goal}"
+            if anti_patterns:
+                prompt_rep += f"\n[PREVIOUS DEFECT]:\n{anti_patterns}\nAddress the defect."
+            report_text = gw.generate(prompt=prompt_rep, system=sys_inst, model=selected_model)
+            expected_artifact.write_text(f"# Sentinel Task Report: {goal}\n\n**Domain**: `Analysis` · **Model**: `{selected_model}` · **Timestamp**: {time.ctime()}\n\n---\n\n{report_text}\n", encoding="utf-8")
+            return {"tool_result": {"exit_code": 0, "stdout": "Report written successfully"}, "artifact_path": str(expected_artifact)}
 
     def verifier(output: dict) -> VerificationResult:
         p = Path(output.get("artifact_path", ""))
-        min_sz = 100 if is_3d_task else 5
         res = verification_gate.verify_file_exists(p, min_bytes=min_sz)
         if not res.passed:
             tool_res = output.get("tool_result", {})
-            stderr = tool_res.get("stderr", "").strip() or "Output artifact missing or empty (0 bytes)."
+            stderr = tool_res.get("stderr", "").strip() or f"Output artifact missing or empty (< {min_sz} bytes)."
             return VerificationResult(
                 passed=False,
                 error_category="EXECUTION_DEFECT",
                 error_signature="OutputArtifactMissingOrEmpty",
                 details={"exit_code": tool_res.get("exit_code"), "stderr": stderr[:400]},
-                lesson=f"Blender script failed: {stderr[:300]}",
+                lesson=f"Execution failed: {stderr[:300]}",
             )
         return res
 
+    gw = LLMGateway(endpoint=config.llm.endpoint, default_model=selected_model)
     result = pilot.run_task(
         task_id=task_id,
         goal=goal,
@@ -278,11 +410,13 @@ def dispatch_task(req: TaskDispatchRequest):
         verifier=verifier,
         skill_distillation_name=f"skill_{task_id}",
         max_attempts=max_att,
+        domain=domain,
+        llm_gateway=gw,
     )
 
-    # Launch in Blender GUI if requested
+    # Launch in Blender GUI if requested and is 3D
     gui_info = None
-    if req.launch_gui and expected_artifact.exists() and is_3d_task:
+    if req.launch_gui and expected_artifact.exists() and domain == "3d":
         try:
             gui_info = tool_registry.execute_tool("blender_launch_gui", {"file_to_open": str(expected_artifact)})
         except Exception as e:
@@ -291,11 +425,13 @@ def dispatch_task(req: TaskDispatchRequest):
     return {
         "task_id": result.task.id,
         "goal": goal,
+        "domain": domain,
         "model": selected_model,
         "state": result.task.state.value,
         "attempts_taken": result.attempts_taken,
         "success": result.success,
         "artifact_path": str(expected_artifact) if expected_artifact.exists() else None,
+        "artifact_filename": expected_artifact.name if expected_artifact.exists() else None,
         "artifact_size_bytes": expected_artifact.stat().st_size if expected_artifact.exists() else 0,
         "download_url": f"/workspaces/{expected_artifact.name}" if expected_artifact.exists() else None,
         "gui_launch": gui_info,
@@ -624,15 +760,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         const badgeColor = t.state === 'Succeeded' ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' :
                            t.state === 'Failed' ? 'bg-rose-500/20 text-rose-400 border-rose-500/30' :
                            'bg-sky-500/20 text-sky-400 border-sky-500/30';
+        let artLink = '<span class="text-slate-500 font-mono text-[11px]">-</span>';
+        if (t.artifact_filename) {
+          const ext = (t.artifact_ext || '').toUpperCase();
+          const icon = ext === 'OBJ' ? '🧊' : ext === 'CSV' ? '📊' : ext === 'MD' ? '📝' : ext === 'PY' ? '🐍' : '📄';
+          artLink = `<a href="${t.artifact_url}" target="_blank" class="text-sky-400 hover:underline font-mono text-[11px] inline-flex items-center gap-1">${icon} ${t.artifact_filename}</a>`;
+        }
         return `
           <tr class="hover:bg-slate-700/30">
             <td class="p-2.5 font-mono text-slate-300">${t.id}</td>
             <td class="p-2.5 font-medium text-slate-200">${t.title}</td>
             <td class="p-2.5"><span class="px-2 py-0.5 border rounded-full text-[10px] font-semibold ${badgeColor}">${t.state}</span></td>
             <td class="p-2.5 text-slate-400">${t.attempt_count} / ${t.max_attempts}</td>
-            <td class="p-2.5 text-slate-400">
-              <a href="/workspaces/${t.id}.obj" target="_blank" class="text-sky-400 hover:underline font-mono text-[11px]">${t.id}.obj</a>
-            </td>
+            <td class="p-2.5 text-slate-400">${artLink}</td>
           </tr>
         `;
       }).join('');

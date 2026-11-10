@@ -8,6 +8,7 @@ from typing import Any
 
 from sentinel_core.leases import LeaseManager
 from sentinel_broker.tool_registry import ToolRegistry
+from sentinel_core.agent_registry import AgentRegistry
 
 
 @dataclass
@@ -18,9 +19,15 @@ class AuthorizationDecision:
 
 
 class PolicyDecisionPoint:
-    def __init__(self, leases: LeaseManager, tool_registry: ToolRegistry):
+    def __init__(
+        self,
+        leases: LeaseManager,
+        tool_registry: ToolRegistry,
+        agent_registry: AgentRegistry | None = None,
+    ):
         self.leases = leases
         self.tool_registry = tool_registry
+        self.agent_registry = agent_registry
 
     def evaluate(
         self,
@@ -47,10 +54,26 @@ class PolicyDecisionPoint:
                 reason=f"Tool '{tool_name}' is not registered in the broker tool catalog.",
             )
 
-        # 3. Policy Rule: IRREVERSIBLE tool authorization
-        # By default, irreversible tools require an explicit flag in context
         ctx = context or {}
-        if tool.effect_class.value == "IRREVERSIBLE" and not ctx.get("allow_irreversible", False):
+        is_irreversible = tool.effect_class.value == "IRREVERSIBLE"
+
+        # 3. Gate A: Agent Capability & Manifest Check (AT-A-05)
+        agent_id = ctx.get("agent_id")
+        if agent_id and self.agent_registry:
+            authorized, reason = self.agent_registry.validate_capability(
+                agent_id=agent_id,
+                tool_name=tool_name,
+                is_irreversible=is_irreversible,
+            )
+            if not authorized:
+                return AuthorizationDecision(
+                    allowed=False,
+                    status_code="REJECTED_CAPABILITY_NOT_GRANTED",
+                    reason=reason,
+                )
+
+        # 4. Policy Rule: IRREVERSIBLE tool authorization
+        if is_irreversible and not ctx.get("allow_irreversible", False):
             return AuthorizationDecision(
                 allowed=False,
                 status_code="REJECTED_IRREVERSIBLE_DENIED",

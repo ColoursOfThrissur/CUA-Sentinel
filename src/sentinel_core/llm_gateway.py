@@ -43,6 +43,7 @@ class LLMGateway:
         system: str | None = None,
         model: str | None = None,
         temperature: float = 0.2,
+        max_tokens: int = 1024,
     ) -> str:
         """Generate raw text response from local Ollama model."""
         target_model = model or self.default_model
@@ -53,6 +54,7 @@ class LLMGateway:
             "options": {
                 "temperature": temperature,
                 "top_p": 0.9,
+                "num_predict": max_tokens,
             },
         }
         if system:
@@ -83,7 +85,14 @@ class LLMGateway:
         m2 = re.search(r"```\s*(.*?)\s*```", raw_text, re.DOTALL)
         if m2:
             return m2.group(1).strip()
-        # 3. Clean up raw text if lines resemble python
+        # 3. Handle unclosed ```python block
+        m3 = re.search(r"```(?:python)?\s*(.*)", raw_text, re.DOTALL | re.IGNORECASE)
+        if m3 and ("def " in raw_text or "import " in raw_text or "class " in raw_text):
+            cleaned = m3.group(1).strip()
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3].strip()
+            return cleaned
+        # 4. Clean up raw text if lines resemble python
         lines = []
         for line in raw_text.splitlines():
             # Filter out non-code commentary if outside code blocks

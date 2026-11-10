@@ -53,6 +53,10 @@ class SkillBank:
                 (skill_id, name, description, code, now, meta_str),
             )
 
+        # Get updated version number
+        row = self.db.execute_one("SELECT version FROM skills WHERE name = ?", (name,))
+        v_num = row["version"] if row else 1
+
         # 2. Persist to filesystem as skill folder with SKILL.md
         skill_folder = self.skills_dir / name
         skill_folder.mkdir(parents=True, exist_ok=True)
@@ -60,11 +64,11 @@ class SkillBank:
         md_doc = f"""---
 name: {name}
 description: {description}
-version: 1
+version: {v_num}
 verified_at: {now}
 effect_class: {eff_str}
 ---
-# {name}
+# {name} (v{v_num})
 {description}
 
 ## Parameters
@@ -83,6 +87,7 @@ effect_class: {eff_str}
         return {
             "id": skill_id,
             "name": name,
+            "version": v_num,
             "description": description,
             "effect_class": eff_str,
             "folder": str(skill_folder),
