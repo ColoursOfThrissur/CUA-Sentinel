@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,12 @@ from sentinel_core.state_machine import StateMachine
 from sentinel_core.side_effects import SideEffectLedger
 from sentinel_core.verification_gate import VerificationGate, VerificationResult
 from sentinel_core.agent_registry import AgentRegistry, AgentManifest
+from sentinel_core.dag_orchestrator import (
+    DAGOrchestrator,
+    DAGStepDefinition,
+    DAGState,
+    DAGStepState,
+)
 from sentinel_adaptive.mistake_ledger import MistakeMemory
 from sentinel_adaptive.skill_bank import SkillBank
 from sentinel_broker.tool_registry import ToolRegistry
@@ -96,53 +103,62 @@ pilot = AdaptivePilotController(state_machine, verification_gate, mistake_memory
 
 
 def init_standard_agents():
-    # 1. 3D Artisan
-    agent_registry.register_draft(AgentManifest(
-        agent_id="blender_artisan",
-        name="3D Procedural Artisan",
-        version="1.0.0",
-        description="Synthesizes procedural 3D meshes, shaders, and animations in Blender 4.5 LTS.",
-        author="Sentinel Biological Systems",
-        capabilities=["3d:mesh", "3d:bpy", "3d:render"],
-        allowed_organs=["blender_run_python", "blender_launch_gui"],
-    ))
-    try:
-        agent_registry.publish_release("blender_artisan", "1.0.0", publisher="Sentinel Core")
-    except Exception:
-        pass
+    std_agents = [
+        AgentManifest(
+            agent_id="blender_artisan",
+            name="3D Procedural Artisan",
+            version="1.0.0",
+            description="Synthesizes procedural 3D meshes, shaders, and animations in Blender 4.5 LTS.",
+            author="Sentinel Biological Systems",
+            capabilities=["3d:mesh", "3d:bpy", "3d:render"],
+            allowed_organs=["blender_run_python", "blender_launch_gui"],
+        ),
+        AgentManifest(
+            agent_id="data_analyst",
+            name="Data & Metrics Analyst",
+            version="1.0.0",
+            description="Analyzes CSV datasets, computes aggregations, and synthesizes analytical reports.",
+            author="Sentinel Biological Systems",
+            capabilities=["data:csv", "data:stats", "data:report"],
+            allowed_organs=["python_sandbox_run", "csv_analyze_and_report", "file_transform"],
+        ),
+        AgentManifest(
+            agent_id="code_engineer",
+            name="Software Engineer",
+            version="1.0.0",
+            description="Synthesizes Python scripts, modules, algorithms, and executes sandboxed code.",
+            author="Sentinel Biological Systems",
+            capabilities=["code:python", "code:execution", "code:testing"],
+            allowed_organs=["python_sandbox_run", "windows_command"],
+        ),
+        AgentManifest(
+            agent_id="systems_reporter",
+            name="Systems Executive Reporter",
+            version="1.0.0",
+            description="Synthesizes executive markdown reports and system health briefings.",
+            author="Sentinel Biological Systems",
+            capabilities=["analysis:markdown", "reporting:executive"],
+            allowed_organs=["python_sandbox_run", "file_transform"],
+        ),
+    ]
 
-    # 2. Data Analyst
-    agent_registry.register_draft(AgentManifest(
-        agent_id="data_analyst",
-        name="Data & Metrics Analyst",
-        version="1.0.0",
-        description="Analyzes CSV datasets, computes aggregations, and synthesizes analytical reports.",
-        author="Sentinel Biological Systems",
-        capabilities=["data:csv", "data:stats", "data:report"],
-        allowed_organs=["python_sandbox_run", "csv_analyze_and_report", "file_transform"],
-    ))
-    try:
-        agent_registry.publish_release("data_analyst", "1.0.0", publisher="Sentinel Core")
-    except Exception:
-        pass
-
-    # 3. Code Engineer
-    agent_registry.register_draft(AgentManifest(
-        agent_id="code_engineer",
-        name="Software Engineer",
-        version="1.0.0",
-        description="Synthesizes Python scripts, modules, algorithms, and executes sandboxed code.",
-        author="Sentinel Biological Systems",
-        capabilities=["code:python", "code:execution", "code:testing"],
-        allowed_organs=["python_sandbox_run", "windows_command"],
-    ))
-    try:
-        agent_registry.publish_release("code_engineer", "1.0.0", publisher="Sentinel Core")
-    except Exception:
-        pass
+    for m in std_agents:
+        rec = agent_registry.get_agent_record(m.agent_id)
+        if not rec:
+            agent_registry.register_draft(m)
+            try:
+                agent_registry.publish_release(m.agent_id, m.version, publisher="Sentinel Core")
+            except Exception:
+                pass
+        elif rec["status"] != "Published":
+            rel = agent_registry.get_release(m.agent_id, m.version)
+            if rel:
+                with db.transaction() as c:
+                    c.execute("UPDATE agents SET status = 'Published' WHERE id = ?", (m.agent_id,))
 
 
 init_standard_agents()
+dag_orchestrator = DAGOrchestrator(db)
 
 
 class ConfigUpdateRequest(BaseModel):
@@ -191,6 +207,14 @@ class AgentActionRequest(BaseModel):
 class ExecuteSkillRequest(BaseModel):
     skill_name: str
     params: dict[str, Any] = {}
+
+
+class DAGDispatchRequest(BaseModel):
+    template: str | None = None
+    name: str | None = None
+    description: str | None = None
+    steps: list[dict[str, Any]] | None = None
+    model: str | None = None
 
 
 @app.get("/api/config")
@@ -387,31 +411,24 @@ def list_side_effects():
     return [dict(r) for r in rows]
 
 
-@app.post("/api/tasks/dispatch")
-def dispatch_task(req: TaskDispatchRequest):
-    """Dispatches any custom user task across 3D, data, code, or report domains."""
-    task_id = f"task_{int(time.time())}"
-    goal = req.goal.strip()
-    max_att = req.max_attempts or config.iteration_limits.max_attempts
-    selected_model = req.model or config.llm.model
+def execute_domain_step(
+    task_id: str,
+    goal: str,
+    domain: str,
+    effective_agent: str,
+    selected_model: str,
+    max_attempts: int = 3,
+    predecessor_artifacts: dict[str, str] | None = None,
+    launch_gui: bool = False,
+) -> dict[str, Any]:
     lower_goal = goal.lower()
-
-    if any(w in lower_goal for w in [
-        "3d", "blender", "model", "sword", "mug", "spaceship", "tree", "chair", "monkey", "mesh",
-        "build", "turret", "gatling", "cylinder", "cube", "sphere", "torus", "geometry", "sculpture",
-        "gun", "barrel", "mount", "bracket", "pillar", "shaft", "car", "robot", "cannon", "shield",
-        "armor", "helmet", "ring", "table", "lamp", "building", "castle", "plane", "rifle", "dagger",
-        "warhammer"
-    ]):
-        domain = "3d"
+    if domain == "3d":
         ext = "obj"
         min_sz = 100
-    elif any(w in lower_goal for w in ["csv", "table", "dataset", "dataframe", "rows", "columns", "spreadsheet", "sales"]):
-        domain = "data"
+    elif domain == "data":
         ext = "csv"
         min_sz = 15
-    elif any(w in lower_goal for w in ["code", "python script", "function", "class", "algorithm", "program", "script", "write code"]):
-        domain = "code"
+    elif domain == "code":
         ext = "py"
         min_sz = 15
     else:
@@ -419,22 +436,23 @@ def dispatch_task(req: TaskDispatchRequest):
         ext = "md"
         min_sz = 20
 
-    # Determine Gate A Agent Identity
-    effective_agent = req.agent_id
-    if not effective_agent or effective_agent == "auto":
-        if domain == "3d":
-            effective_agent = "blender_artisan"
-        elif domain == "data":
-            effective_agent = "data_analyst"
-        elif domain == "code":
-            effective_agent = "code_engineer"
-        else:
-            effective_agent = "data_analyst"
-
     expected_artifact = workspaces_dir / f"{task_id}.{ext}"
 
+    # Assemble contextual inputs from upstream pipeline steps if running in a DAG
+    pred_context = ""
+    if predecessor_artifacts:
+        pred_context = "\n\n[UPSTREAM PIPELINE ARTIFACTS IN THIS WORKFLOW]:\n"
+        for p_id, p_path in predecessor_artifacts.items():
+            pp = Path(p_path)
+            pred_context += f"• Predecessor step '{p_id}' generated: '{p_path}'\n"
+            if pp.exists() and pp.suffix in (".csv", ".py", ".md", ".txt", ".json"):
+                try:
+                    content_snip = pp.read_text(encoding="utf-8")[:800]
+                    pred_context += f"  File content preview:\n```\n{content_snip}\n```\n"
+                except Exception:
+                    pass
+
     def worker_executor(g: str, attempt_num: int, anti_patterns: str):
-        # Step 1: Wire active attempt & lease token through Fenced Broker & PDP
         active_attempt = state_machine.db.execute_one(
             "SELECT id, lease_token FROM attempts WHERE task_id = ? AND status = 'Active'",
             (task_id,),
@@ -465,7 +483,6 @@ def dispatch_task(req: TaskDispatchRequest):
                 use_llm=True,
                 model=selected_model,
             )
-            # Upgrade A: Pre-Flight AST Linter / Rewriter (<2ms)
             preflight = PreFlightLinter.sanitize(blender_script, domain="3d")
             blender_script = preflight.code
             if preflight.applied_fixes:
@@ -489,13 +506,12 @@ def dispatch_task(req: TaskDispatchRequest):
                 f"(csv, io, random, math, datetime) to generate the CSV dataset and write it directly to '{out_path_str}'.\n"
                 "Output ONLY executable Python code inside a ```python ``` block."
             )
-            prompt_data = f"Goal: {goal}\nTarget Output CSV Path: '{out_path_str}'"
+            prompt_data = f"Goal: {goal}\nTarget Output CSV Path: '{out_path_str}'{pred_context}"
             if anti_patterns:
                 prompt_data += f"\n[PREVIOUS ATTEMPT FAILED]:\n{anti_patterns}\nEnsure the CSV file is written to '{out_path_str}' with valid header and rows."
 
             raw_code = gw.generate(prompt=prompt_data, system=sys_inst, model=selected_model)
             py_code = gw.extract_python_code(raw_code)
-            # PreFlight sanitize
             preflight = PreFlightLinter.sanitize(py_code, domain="code")
             py_code = preflight.code
 
@@ -503,7 +519,6 @@ def dispatch_task(req: TaskDispatchRequest):
                 "script_code": py_code,
                 "output_artifact_path": str(expected_artifact),
             })
-            # If the script printed the CSV to stdout instead of file, save stdout
             if not expected_artifact.exists() and res.get("stdout") and "," in res.get("stdout"):
                 expected_artifact.write_text(res["stdout"].strip(), encoding="utf-8")
 
@@ -511,8 +526,6 @@ def dispatch_task(req: TaskDispatchRequest):
         elif domain == "code":
             logger.info("Executing Code synthesis via LLM (%s) attempt %d", selected_model, attempt_num)
             gw = LLMGateway(endpoint=config.llm.endpoint, default_model=selected_model)
-            
-            # Upgrade C: Scaffolder with surgical failure anchoring on retry
             scaffolding_lvl = ScaffoldingLevel.LEVEL_3_ADAPTIVE if anti_patterns else ScaffoldingLevel.LEVEL_2_GUARDED
             sys_inst = PromptScaffolder.build_system_prompt("code", level=scaffolding_lvl)
             prompt_code = PromptScaffolder.build_user_prompt(
@@ -521,12 +534,10 @@ def dispatch_task(req: TaskDispatchRequest):
                 artifact_path=str(expected_artifact),
                 anti_patterns=anti_patterns,
                 level=scaffolding_lvl,
-            )
+            ) + pred_context
 
             raw_code = gw.generate(prompt=prompt_code, system=sys_inst, model=selected_model)
             py_code = gw.extract_python_code(raw_code)
-            
-            # Upgrade A: Pre-Flight deterministic sanitizer
             preflight = PreFlightLinter.sanitize(py_code, domain="code")
             py_code = preflight.code
             if preflight.applied_fixes:
@@ -535,18 +546,17 @@ def dispatch_task(req: TaskDispatchRequest):
             expected_artifact.write_text(py_code, encoding="utf-8")
             return {"tool_result": {"exit_code": 0, "stdout": "Code generated successfully"}, "artifact_path": str(expected_artifact), "synthesized_code": py_code}
         else:
-            # Report / analysis domain (.md)
             logger.info("Executing Report synthesis via LLM (%s) attempt %d", selected_model, attempt_num)
             gw = LLMGateway(endpoint=config.llm.endpoint, default_model=selected_model)
             sys_inst = (
-                "You are Sentinel's Autonomous Analyst. Provide a clear, structured, comprehensive Markdown report solving the user's task. "
+                "You are Sentinel's Autonomous Systems Reporter. Provide a clear, structured, comprehensive Markdown report solving the user's task. "
                 "Use headings, bullet points, and data tables where helpful."
             )
-            prompt_rep = f"Task: {goal}"
+            prompt_rep = f"Task: {goal}{pred_context}"
             if anti_patterns:
                 prompt_rep += f"\n[PREVIOUS DEFECT]:\n{anti_patterns}\nAddress the defect."
             report_text = gw.generate(prompt=prompt_rep, system=sys_inst, model=selected_model)
-            expected_artifact.write_text(f"# Sentinel Task Report: {goal}\n\n**Domain**: `Analysis` · **Model**: `{selected_model}` · **Timestamp**: {time.ctime()}\n\n---\n\n{report_text}\n", encoding="utf-8")
+            expected_artifact.write_text(f"# Sentinel Task Report: {goal}\n\n**Agent**: `{effective_agent}` · **Model**: `{selected_model}` · **Timestamp**: {time.ctime()}\n\n---\n\n{report_text}\n", encoding="utf-8")
             return {"tool_result": {"exit_code": 0, "stdout": "Report written successfully"}, "artifact_path": str(expected_artifact)}
 
     def verifier(output: dict) -> VerificationResult:
@@ -557,7 +567,6 @@ def dispatch_task(req: TaskDispatchRequest):
             expected_syms = []
             if "lru" in lower_goal:
                 expected_syms = ["LRUCache", "get", "put"]
-            # Upgrade B: Automated Contract Harness matching from library
             contract_harness = ContractLibrary.get_contract_for_goal(goal)
             return verification_gate.verify_python_code(
                 p,
@@ -577,14 +586,13 @@ def dispatch_task(req: TaskDispatchRequest):
         worker_executor=worker_executor,
         verifier=verifier,
         skill_distillation_name=f"skill_{task_id}",
-        max_attempts=max_att,
+        max_attempts=max_attempts,
         domain=domain,
         llm_gateway=gw,
     )
 
-    # Launch in Blender GUI if requested and is 3D
     gui_info = None
-    if req.launch_gui and expected_artifact.exists() and domain == "3d":
+    if launch_gui and expected_artifact.exists() and domain == "3d":
         try:
             gui_info = tool_registry.execute_tool("blender_launch_gui", {"file_to_open": str(expected_artifact)})
         except Exception as e:
@@ -607,6 +615,122 @@ def dispatch_task(req: TaskDispatchRequest):
         "distilled_skill": result.distilled_skill,
         "mistakes_encountered": result.mistakes_encountered,
     }
+
+
+@app.post("/api/tasks/dispatch")
+def dispatch_task(req: TaskDispatchRequest):
+    """Dispatches any custom user task across 3D, data, code, or report domains."""
+    task_id = f"task_{int(time.time())}"
+    goal = req.goal.strip()
+    max_att = req.max_attempts or config.iteration_limits.max_attempts
+    selected_model = req.model or config.llm.model
+    lower_goal = goal.lower()
+
+    if any(w in lower_goal for w in [
+        "3d", "blender", "model", "sword", "mug", "spaceship", "tree", "chair", "monkey", "mesh",
+        "build", "turret", "gatling", "cylinder", "cube", "sphere", "torus", "geometry", "sculpture",
+        "gun", "barrel", "mount", "bracket", "pillar", "shaft", "car", "robot", "cannon", "shield",
+        "armor", "helmet", "ring", "table", "lamp", "building", "castle", "plane", "rifle", "dagger",
+        "warhammer"
+    ]):
+        domain = "3d"
+    elif any(w in lower_goal for w in ["csv", "table", "dataset", "dataframe", "rows", "columns", "spreadsheet", "sales"]):
+        domain = "data"
+    elif any(w in lower_goal for w in ["code", "python script", "function", "class", "algorithm", "program", "script", "write code"]):
+        domain = "code"
+    else:
+        domain = "report"
+
+    # Determine Gate A Agent Identity
+    effective_agent = req.agent_id
+    if not effective_agent or effective_agent == "auto":
+        if domain == "3d":
+            effective_agent = "blender_artisan"
+        elif domain == "data":
+            effective_agent = "data_analyst"
+        elif domain == "code":
+            effective_agent = "code_engineer"
+        else:
+            effective_agent = "systems_reporter"
+
+    return execute_domain_step(
+        task_id=task_id,
+        goal=goal,
+        domain=domain,
+        effective_agent=effective_agent,
+        selected_model=selected_model,
+        max_attempts=max_att,
+        launch_gui=req.launch_gui,
+    )
+
+
+def dag_step_executor(step: dict[str, Any], predecessor_artifacts: dict[str, str]) -> dict[str, Any]:
+    step_task_id = f"task_{step['dag_id']}_{step['step_id']}"
+    res = execute_domain_step(
+        task_id=step_task_id,
+        goal=step["goal"],
+        domain=step.get("domain", "report"),
+        effective_agent=step.get("agent_id", "data_analyst"),
+        selected_model=config.llm.model,
+        max_attempts=config.iteration_limits.max_attempts,
+        predecessor_artifacts=predecessor_artifacts,
+        launch_gui=False,
+    )
+    return {
+        "success": res.get("success", False),
+        "task_id": res.get("task_id"),
+        "artifact_path": res.get("artifact_path"),
+        "error": "Step verification failed or retries exhausted" if not res.get("success") else None,
+    }
+
+
+@app.get("/api/dag/runs")
+def list_dag_runs():
+    return dag_orchestrator.list_dags()
+
+
+@app.get("/api/dag/{dag_id}")
+def get_dag_run(dag_id: str):
+    dag = dag_orchestrator.get_dag(dag_id)
+    if not dag:
+        raise HTTPException(status_code=404, detail=f"DAG '{dag_id}' not found")
+    return dag
+
+
+@app.post("/api/dag/dispatch")
+def dispatch_dag(req: DAGDispatchRequest):
+    try:
+        if req.template == "analytics":
+            dag_id = DAGOrchestrator.create_predefined_analytics_pipeline(dag_orchestrator)
+        elif req.steps:
+            step_defs = [
+                DAGStepDefinition(
+                    step_id=s["step_id"],
+                    goal=s["goal"],
+                    agent_id=s["agent_id"],
+                    domain=s["domain"],
+                    dependencies=s.get("dependencies", []),
+                )
+                for s in req.steps
+            ]
+            dag_id = dag_orchestrator.create_dag(
+                name=req.name or "Custom Pipeline",
+                description=req.description or "Operator defined pipeline",
+                steps=step_defs,
+            )
+        else:
+            raise HTTPException(status_code=400, detail="Either 'template' or 'steps' must be provided.")
+
+        def run_in_bg():
+            try:
+                dag_orchestrator.execute_dag(dag_id, dag_step_executor)
+            except Exception as e:
+                logger.exception("DAG background execution encountered error: %s", e)
+
+        threading.Thread(target=run_in_bg, daemon=True).start()
+        return {"success": True, "dag_id": dag_id}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 DASHBOARD_HTML = """<!DOCTYPE html>
@@ -724,6 +848,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <!-- Navigation Tabs -->
     <div class="border-b border-slate-700 flex gap-4 text-xs font-semibold text-slate-400">
       <button onclick="switchTab('tab-tasks')" class="tab-btn pb-2 border-b-2 border-sky-400 text-sky-400" id="btn-tasks">📋 Task Lifecycle & Artifacts</button>
+      <button onclick="switchTab('tab-dag')" class="tab-btn pb-2 hover:text-slate-200" id="btn-dag">⚡ Multi-Agent Pipelines (DAG)</button>
       <button onclick="switchTab('tab-agents')" class="tab-btn pb-2 hover:text-slate-200" id="btn-agents">🤖 Registered Agents (Gate A)</button>
       <button onclick="switchTab('tab-config')" class="tab-btn pb-2 hover:text-slate-200" id="btn-config">⚙️ Iteration & Quota Config</button>
       <button onclick="switchTab('tab-mistakes')" class="tab-btn pb-2 hover:text-slate-200" id="btn-mistakes">🧠 Episodic Mistake Memory</button>
@@ -749,6 +874,37 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <tr><td colspan="5" class="p-4 text-center text-slate-500">Loading tasks...</td></tr>
           </tbody>
         </table>
+      </div>
+    </div>
+
+    <!-- Tab: Multi-Agent Pipelines (DAG) -->
+    <div id="tab-dag" class="tab-content hidden bg-slate-800/60 border border-slate-700 rounded-xl p-5 space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-700/80 pb-3">
+        <div>
+          <h2 class="text-base font-bold text-slate-100 flex items-center gap-2">
+            <span>⚡</span> Multi-Agent Choreography & Pipelines (DAG)
+          </h2>
+          <p class="text-xs text-slate-400 mt-0.5">Topological multi-stage task execution across Gate A specialized agents with automated artifact piping.</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <button onclick="launchAnalyticsPipeline()" id="btn-launch-pipeline" class="px-3.5 py-1.5 bg-gradient-to-r from-sky-600 to-indigo-600 hover:from-sky-500 hover:to-indigo-500 text-xs font-bold text-white rounded-lg transition flex items-center gap-1.5 shadow-md">
+            <span>🚀</span> Launch 3-Agent Analytics Pipeline
+          </button>
+        </div>
+      </div>
+
+      <!-- Live Pipeline Execution Banner -->
+      <div id="dag-live-banner" class="hidden bg-slate-950/80 border border-indigo-500/40 rounded-lg p-3 text-xs space-y-1">
+        <div class="flex items-center justify-between">
+          <span id="dag-live-title" class="font-bold text-indigo-400">⏳ Pipeline Running...</span>
+          <span id="dag-live-badge" class="px-2 py-0.5 text-[10px] font-semibold rounded bg-indigo-500/20 text-indigo-400 border border-indigo-500/30">RUNNING</span>
+        </div>
+        <p id="dag-live-detail" class="text-slate-300 text-[11px]">Choreographing agents across pipeline steps...</p>
+      </div>
+
+      <!-- DAG Runs Container -->
+      <div id="dag-runs-container" class="space-y-4 pt-1">
+        <p class="text-xs text-slate-500">Loading pipeline runs...</p>
       </div>
     </div>
 
@@ -1040,6 +1196,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const btnId = 'btn-' + tabId.replace('tab-', '');
       const btn = document.getElementById(btnId);
       if (btn) btn.classList.add('border-b-2', 'border-sky-400', 'text-sky-400');
+      if (tabId === 'tab-dag') loadDAGRuns();
     }
 
     async function loadConfig() {
@@ -1391,10 +1548,176 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     function refreshAll() {
       loadTelemetry();
       loadTasks();
+      loadDAGRuns();
       loadAgents();
       loadMistakes();
       loadSkills();
       loadTools();
+    }
+
+    async function launchAnalyticsPipeline() {
+      const btn = document.getElementById('btn-launch-pipeline');
+      const banner = document.getElementById('dag-live-banner');
+      const title = document.getElementById('dag-live-title');
+      const detail = document.getElementById('dag-live-detail');
+      const badge = document.getElementById('dag-live-badge');
+
+      btn.disabled = true;
+      btn.classList.add('opacity-50');
+      banner.classList.remove('hidden');
+      title.innerText = '🚀 Launching Analytics Pipeline...';
+      badge.innerText = 'DISPATCHING';
+      badge.className = 'px-2 py-0.5 text-[10px] font-semibold rounded bg-sky-500/20 text-sky-400 border border-sky-500/30';
+      detail.innerText = 'Initializing 3-Agent Collaborative Workflow: Data Analyst → Code Engineer → Systems Reporter';
+
+      try {
+        const res = await fetch('/api/dag/dispatch', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ template: 'analytics' })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          title.innerText = `⏳ Pipeline Executing (${data.dag_id})`;
+          badge.innerText = 'RUNNING';
+          detail.innerText = 'Agents executing topological steps with strict capability fencing & verification gates...';
+          loadDAGRuns();
+          const pollInterval = setInterval(async () => {
+            const r = await fetch(`/api/dag/${data.dag_id}`);
+            const d = await r.json();
+            loadDAGRuns();
+            loadTasks();
+            if (d.state === 'Succeeded' || d.state === 'Failed') {
+              clearInterval(pollInterval);
+              btn.disabled = false;
+              btn.classList.remove('opacity-50');
+              if (d.state === 'Succeeded') {
+                title.innerText = `✓ Pipeline Succeeded (${data.dag_id})`;
+                badge.innerText = 'SUCCEEDED';
+                badge.className = 'px-2 py-0.5 text-[10px] font-semibold rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30';
+                detail.innerText = 'All 3 agents successfully completed and verified their pipeline steps!';
+              } else {
+                title.innerText = `❌ Pipeline Failed (${data.dag_id})`;
+                badge.innerText = 'FAILED';
+                badge.className = 'px-2 py-0.5 text-[10px] font-semibold rounded bg-rose-500/20 text-rose-400 border border-rose-500/30';
+                detail.innerText = d.error || 'One or more pipeline steps failed verification.';
+              }
+            }
+          }, 3000);
+        } else {
+          alert('Failed to dispatch pipeline: ' + (data.detail || JSON.stringify(data)));
+          btn.disabled = false;
+          btn.classList.remove('opacity-50');
+          banner.classList.add('hidden');
+        }
+      } catch (e) {
+        alert('Request failed: ' + e);
+        btn.disabled = false;
+        btn.classList.remove('opacity-50');
+        banner.classList.add('hidden');
+      }
+    }
+
+    async function loadDAGRuns() {
+      const container = document.getElementById('dag-runs-container');
+      if (!container) return;
+      try {
+        const res = await fetch('/api/dag/runs');
+        const runs = await res.json();
+        if (!runs.length) {
+          container.innerHTML = '<p class="text-xs text-slate-500 p-4">No multi-agent pipeline runs recorded yet. Click "Launch 3-Agent Analytics Pipeline" above to run one!</p>';
+          return;
+        }
+
+        const detailedRuns = await Promise.all(runs.map(async r => {
+          try {
+            const dRes = await fetch(`/api/dag/${r.id}`);
+            return await dRes.json();
+          } catch {
+            return r;
+          }
+        }));
+
+        container.innerHTML = detailedRuns.map(dag => {
+          const stateBadge = dag.state === 'Succeeded' ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' :
+                             dag.state === 'Failed' ? 'bg-rose-500/20 text-rose-400 border-rose-500/30' :
+                             'bg-sky-500/20 text-sky-400 border-sky-500/30 animate-pulse';
+          const steps = dag.steps || [];
+          const completedCount = steps.filter(s => s.state === 'Succeeded').length;
+          const totalCount = steps.length || 1;
+          const pct = Math.round((completedCount / totalCount) * 100);
+
+          return `
+            <div class="bg-slate-900 border border-slate-700/80 rounded-xl p-4 space-y-3.5 shadow-md">
+              <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2.5">
+                <div class="space-y-0.5">
+                  <div class="flex items-center gap-2">
+                    <span class="text-sm font-bold text-slate-100">${dag.name}</span>
+                    <span class="px-2 py-0.5 text-[10px] font-bold font-mono rounded border ${stateBadge}">${dag.state.toUpperCase()}</span>
+                  </div>
+                  <p class="text-[11px] text-slate-400">${dag.description || ''}</p>
+                </div>
+                <div class="text-right text-[11px] font-mono text-slate-400">
+                  <span>ID: <span class="text-slate-300">${dag.id}</span></span>
+                  <div class="text-[10px] text-slate-500">${new Date(dag.created_at * 1000).toLocaleTimeString()}</div>
+                </div>
+              </div>
+
+              <!-- Progress bar -->
+              <div class="space-y-1">
+                <div class="flex justify-between text-[10px] font-mono text-slate-400">
+                  <span>Pipeline Progress: ${completedCount}/${totalCount} Steps Completed</span>
+                  <span class="font-bold text-sky-400">${pct}%</span>
+                </div>
+                <div class="w-full bg-slate-950 h-1.5 rounded-full overflow-hidden border border-slate-800">
+                  <div class="bg-gradient-to-r from-sky-500 to-emerald-500 h-full transition-all duration-500" style="width: ${pct}%"></div>
+                </div>
+              </div>
+
+              <!-- Step Pipeline Flow -->
+              <div class="grid grid-cols-1 md:grid-cols-${Math.min(steps.length, 3)} gap-3 pt-1">
+                ${steps.map((st, idx) => {
+                  const sBadge = st.state === 'Succeeded' ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' :
+                                 st.state === 'Running' ? 'bg-sky-500/20 text-sky-400 border-sky-500/30 animate-pulse' :
+                                 st.state === 'Failed' ? 'bg-rose-500/20 text-rose-400 border-rose-500/30' :
+                                 st.state === 'Skipped' ? 'bg-slate-800 text-slate-500 border-slate-700' :
+                                 'bg-slate-800/60 text-slate-400 border-slate-700';
+                  const domainIcon = st.domain === 'data' ? '📊' : st.domain === 'code' ? '💻' : st.domain === '3d' ? '🧊' : '📝';
+                  let artBtn = '';
+                  if (st.output_artifact) {
+                    const artName = st.output_artifact.split(/[\\\\/]/).pop();
+                    const artExt = artName.split('.').pop().toUpperCase();
+                    artBtn = `
+                      <button onclick="previewArtifact('${artName}', '/workspaces/${artName}', '${artExt}')"
+                              class="mt-2 w-full py-1 px-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 hover:border-slate-600 rounded text-[10px] font-mono text-sky-300 flex items-center justify-center gap-1.5 transition">
+                        <span>👁️</span> Inspect ${artName}
+                      </button>
+                    `;
+                  }
+                  return `
+                    <div class="bg-slate-950/70 border border-slate-800 rounded-lg p-3 flex flex-col justify-between space-y-2 relative">
+                      <div class="space-y-1.5">
+                        <div class="flex items-center justify-between">
+                          <span class="text-[10px] font-mono font-bold text-slate-400">Step ${idx + 1}</span>
+                          <span class="px-1.5 py-0.5 text-[9px] font-bold font-mono rounded border ${sBadge}">${st.state}</span>
+                        </div>
+                        <div class="flex items-center gap-1.5 text-xs font-semibold text-slate-200">
+                          <span>${domainIcon}</span>
+                          <span class="truncate">${st.agent_id}</span>
+                        </div>
+                        <p class="text-[11px] text-slate-400 line-clamp-2 leading-relaxed" title="${st.goal}">${st.goal}</p>
+                      </div>
+                      ${artBtn}
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            </div>
+          `;
+        }).join('');
+      } catch (e) {
+        container.innerHTML = '<p class="text-rose-400 p-4 text-xs">Failed to load DAG runs: ' + e + '</p>';
+      }
     }
 
     let threeScene, threeCamera, threeRenderer, threeControls, currentObj;

@@ -108,6 +108,35 @@ CREATE TABLE IF NOT EXISTS agent_releases (
     FOREIGN KEY(agent_id) REFERENCES agents(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS dag_runs (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    state TEXT NOT NULL CHECK(state IN ('Pending', 'Running', 'Succeeded', 'Failed')),
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    completed_at REAL,
+    error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS dag_steps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dag_id TEXT NOT NULL,
+    step_id TEXT NOT NULL,
+    goal TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    domain TEXT NOT NULL,
+    dependencies_json TEXT NOT NULL DEFAULT '[]',
+    state TEXT NOT NULL CHECK(state IN ('Pending', 'Running', 'Succeeded', 'Failed', 'Skipped')),
+    task_id TEXT,
+    output_artifact TEXT,
+    error TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    UNIQUE(dag_id, step_id),
+    FOREIGN KEY(dag_id) REFERENCES dag_runs(id) ON DELETE CASCADE
+);
+
 -- Indexes for rapid recovery and fencing queries
 CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state);
 CREATE INDEX IF NOT EXISTS idx_attempts_task_id ON attempts(task_id);
@@ -116,4 +145,5 @@ CREATE INDEX IF NOT EXISTS idx_side_effects_attempt ON side_effect_ledger(attemp
 CREATE INDEX IF NOT EXISTS idx_mistakes_signature ON mistake_ledger(error_signature);
 CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
 CREATE INDEX IF NOT EXISTS idx_agent_releases_agent ON agent_releases(agent_id, version);
+CREATE INDEX IF NOT EXISTS idx_dag_steps_dag_id ON dag_steps(dag_id);
 """
