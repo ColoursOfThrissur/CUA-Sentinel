@@ -43,7 +43,7 @@ class LLMGateway:
         system: str | None = None,
         model: str | None = None,
         temperature: float = 0.2,
-        max_tokens: int = 1024,
+        max_tokens: int = 2048,
     ) -> str:
         """Generate raw text response from local Ollama model."""
         target_model = model or self.default_model

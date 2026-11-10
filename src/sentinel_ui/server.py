@@ -363,11 +363,12 @@ def dispatch_task(req: TaskDispatchRequest):
             gw = LLMGateway(endpoint=config.llm.endpoint, default_model=selected_model)
             sys_inst = (
                 "You are Sentinel's Code Synthesizer. Output ONLY clean, self-contained Python code inside a ```python ``` block. "
-                "Include docstrings, type annotations, and an example usage block."
+                "Include docstrings, type annotations, and an executable 'if __name__ == \"__main__\":' test block with assert statements "
+                "verifying correctness across normal and edge cases without runtime errors."
             )
             prompt_code = f"Goal: {goal}"
             if anti_patterns:
-                prompt_code += f"\n[PREVIOUS ATTEMPT FAILED]:\n{anti_patterns}\nFix the defect."
+                prompt_code += f"\n[PREVIOUS ATTEMPT FAILED WITH ERROR]:\n{anti_patterns}\nCarefully analyze this failure traceback and fix the code so it runs and passes all assertions."
             raw_code = gw.generate(prompt=prompt_code, system=sys_inst, model=selected_model)
             py_code = gw.extract_python_code(raw_code)
             expected_artifact.write_text(py_code, encoding="utf-8")
@@ -389,18 +390,34 @@ def dispatch_task(req: TaskDispatchRequest):
 
     def verifier(output: dict) -> VerificationResult:
         p = Path(output.get("artifact_path", ""))
-        res = verification_gate.verify_file_exists(p, min_bytes=min_sz)
-        if not res.passed:
-            tool_res = output.get("tool_result", {})
-            stderr = tool_res.get("stderr", "").strip() or f"Output artifact missing or empty (< {min_sz} bytes)."
-            return VerificationResult(
-                passed=False,
-                error_category="EXECUTION_DEFECT",
-                error_signature="OutputArtifactMissingOrEmpty",
-                details={"exit_code": tool_res.get("exit_code"), "stderr": stderr[:400]},
-                lesson=f"Execution failed: {stderr[:300]}",
+        if domain == "3d":
+            return verification_gate.verify_obj_geometry(p, min_vertices=10, min_faces=5)
+        elif domain == "code":
+            expected_syms = []
+            contract_harness = None
+            if "lru" in lower_goal:
+                expected_syms = ["LRUCache", "get", "put"]
+                contract_harness = (
+                    "cache_inst = target_module.LRUCache(2)\n"
+                    "assert cache_inst.get(1) in (-1, None), 'Initial empty get must return -1 or None'\n"
+                    "cache_inst.put(1, 10)\n"
+                    "cache_inst.put(2, 20)\n"
+                    "assert cache_inst.get(1) == 10, 'Failed to retrieve key 1'\n"
+                    "cache_inst.put(3, 30)\n"
+                    "assert cache_inst.get(2) in (-1, None), 'Key 2 should have been evicted under capacity 2'\n"
+                    "assert cache_inst.get(1) == 10, 'Key 1 should still exist'\n"
+                    "assert cache_inst.get(3) == 30, 'Key 3 should exist'\n"
+                )
+            return verification_gate.verify_python_code(
+                p,
+                required_symbols=expected_syms,
+                test_execution=True,
+                contract_harness=contract_harness,
             )
-        return res
+        elif domain == "data":
+            return verification_gate.verify_csv_structure(p, min_rows=2, min_cols=2)
+        else:
+            return verification_gate.verify_markdown_report(p, min_words=25)
 
     gw = LLMGateway(endpoint=config.llm.endpoint, default_model=selected_model)
     result = pilot.run_task(
