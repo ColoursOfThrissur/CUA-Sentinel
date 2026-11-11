@@ -1,9 +1,7 @@
-import { React, useState, useEffect, useRef } from 'https://esm.sh/react@18.3.1';
-import htm from 'https://esm.sh/htm@3.1.1';
+import { useState, useEffect, useRef } from 'https://esm.sh/react@18.3.1';
+import { html } from '../html.js';
 import { Icon } from '../icons.js';
 import { api } from '../api.js';
-
-const html = htm.bind(React.createElement);
 
 export function ViewportModal({ artifactName, onClose }) {
   const [content, setContent] = useState('');

@@ -1,8 +1,6 @@
-import { React, useState } from 'https://esm.sh/react@18.3.1';
-import htm from 'https://esm.sh/htm@3.1.1';
+import { useState } from 'https://esm.sh/react@18.3.1';
+import { html } from '../html.js';
 import { Icon } from '../icons.js';
-
-const html = htm.bind(React.createElement);
 
 export function AgentStudio({ agents, onPublishAgent, onDraftAgent }) {
   const [showModal, setShowModal] = useState(false);

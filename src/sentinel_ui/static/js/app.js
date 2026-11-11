@@ -1,6 +1,6 @@
-import { React, useState, useEffect } from 'https://esm.sh/react@18.3.1';
+import { useState, useEffect } from 'https://esm.sh/react@18.3.1';
 import { createRoot } from 'https://esm.sh/react-dom@18.3.1/client';
-import htm from 'https://esm.sh/htm@3.1.1';
+import { html } from './html.js';
 
 import { api } from './api.js';
 import { TopBar } from './components/TopBar.js';
@@ -10,8 +10,6 @@ import { DagCanvas } from './components/DagCanvas.js';
 import { AgentStudio } from './components/AgentStudio.js';
 import { ObservabilityView } from './components/ObservabilityView.js';
 import { ViewportModal } from './components/ViewportModal.js';
-
-const html = htm.bind(React.createElement);
 
 export function App() {
   const [activeTab, setActiveTab] = useState('command'); // 'command' | 'dag' | 'agents' | 'observability'

@@ -1,8 +1,6 @@
-import { React, useState, useRef } from 'https://esm.sh/react@18.3.1';
-import htm from 'https://esm.sh/htm@3.1.1';
+import { useState, useRef } from 'https://esm.sh/react@18.3.1';
+import { html } from '../html.js';
 import { Icon } from '../icons.js';
-
-const html = htm.bind(React.createElement);
 
 const SUGGESTIONS = [
   { label: '🗡️ 3D Sword', mode: 'synthesize', prompt: 'Create a low-poly fantasy iron sword with crossguard in Blender' },

@@ -1,7 +1,4 @@
-import { React } from 'https://esm.sh/react@18.3.1';
-import htm from 'https://esm.sh/htm@3.1.1';
-
-const html = htm.bind(React.createElement);
+import { html } from './html.js';
 
 const ICONS = {
   terminal: (size = 16) => html`
