@@ -222,3 +222,42 @@ def test_react_cancellation(react_setup):
             goal="Test cancellation",
             cancel_event=cancel_evt,
         )
+
+
+def test_react_turn_parser_strips_thinking_tags(react_setup):
+    broker, _, _ = react_setup
+    mock_gw = MockLLMGateway([])
+    controller = ReActController(broker, mock_gw)
+
+    # Response with reasoning model <think> loop
+    sample = (
+        "<think>\n"
+        "Wait, let me think about this. The user wants to see files. Maybe I should list drives?\n"
+        "On second thought, what if there are no drives? No that is silly.\n"
+        "Let me check the tools available. Ah, system_filesystem_inspect.\n"
+        "</think>\n"
+        "Thought: I will inspect the system drives to determine capacity.\n"
+        "Action: system_filesystem_inspect\n"
+        'Action Input: {"mode": "list_drives"}'
+    )
+    thought, action, action_input, final_ans = controller.parse_turn(sample)
+
+    assert "<think>" not in thought
+    assert "Wait, let me think" not in thought
+    assert action == "system_filesystem_inspect"
+    assert action_input == {"mode": "list_drives"}
+    assert final_ans is None
+
+
+def test_react_thought_truncation(react_setup):
+    broker, _, _ = react_setup
+    mock_gw = MockLLMGateway([])
+    controller = ReActController(broker, mock_gw)
+
+    # Overly long thought
+    long_thought = "This is a very long rambling monologue. " * 20
+    sample = f"Thought: {long_thought}\nAction: system_filesystem_inspect\nAction Input: {{}}"
+
+    thought, action, _, _ = controller.parse_turn(sample)
+    assert len(thought) <= 305
+    assert action == "system_filesystem_inspect"

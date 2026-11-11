@@ -95,6 +95,17 @@ class ReActController:
             lines.append(f"  Effect: {t['effect_class']}")
         return "\n".join(lines)
 
+    @staticmethod
+    def _truncate_thought(thought: str, max_chars: int = 300) -> str:
+        """Keeps thought concise so previous turns do not saturate context window."""
+        t = thought.strip()
+        if len(t) <= max_chars:
+            return t
+        period_idx = t.find(". ")
+        if 20 <= period_idx <= max_chars:
+            return t[:period_idx + 1]
+        return t[:max_chars].rstrip() + "..."
+
     def parse_turn(self, text: str) -> tuple[str, str | None, dict[str, Any] | None, str | None]:
         """
         Parses agent output into (thought, action, action_input, final_answer).
@@ -105,6 +116,14 @@ class ReActController:
         """
         clean_text = text.strip()
 
+        # Strip <think>...</think> blocks if present to eliminate thinking loops
+        if "<think>" in clean_text:
+            post_think = re.sub(r"^.*?<\/think>\s*", "", clean_text, flags=re.DOTALL).strip()
+            if post_think:
+                clean_text = post_think
+            else:
+                clean_text = re.sub(r"<\/?think>", "", clean_text).strip()
+
         # Check for Final Answer first
         fa_match = re.search(r"Final Answer:\s*(.*)", clean_text, re.DOTALL | re.IGNORECASE)
         if fa_match:
@@ -112,7 +131,7 @@ class ReActController:
             final_ans = fa_match.group(1).strip()
             # Clean "Thought:" prefix if present
             thought = re.sub(r"^Thought:\s*", "", thought_part, flags=re.IGNORECASE).strip()
-            return thought, None, None, final_ans
+            return self._truncate_thought(thought), None, None, final_ans
 
         # Check for standard ReAct: Action: <tool> \n Action Input: <json>
         action_match = re.search(r"Action:\s*([a-zA-Z0-9_\-]+)", clean_text, re.IGNORECASE)
@@ -128,7 +147,7 @@ class ReActController:
 
             # Parse JSON from raw input string
             action_input = self._extract_json_dict(raw_input_str)
-            return thought, action, action_input, None
+            return self._truncate_thought(thought), action, action_input, None
 
         # Check for JSON action payload: {"action": "...", "action_input": {...}}
         json_dict = self._extract_json_dict(clean_text)
@@ -136,7 +155,7 @@ class ReActController:
             action = str(json_dict["action"]).strip()
             action_input = json_dict.get("action_input", {})
             thought = json_dict.get("thought", "Executing requested tool action.")
-            return thought, action, action_input, None
+            return self._truncate_thought(thought), action, action_input, None
 
         # If no action detected and no explicit Final Answer prefix, treat entire text as Final Answer
         return "", None, None, clean_text
@@ -185,19 +204,21 @@ class ReActController:
             "You solve problems interactively by Reasoning, Acting, and Observing real-time results.\n\n"
             f"{tool_catalog}\n\n"
             "PROTOCOL INSTRUCTIONS:\n"
-            "For each turn, you must think and either call an available tool OR deliver the Final Answer.\n"
+            "For each turn, you must think briefly and either call an available tool OR deliver the Final Answer.\n"
             "Format your response EXACTLY as follows:\n\n"
             "To take an action:\n"
-            "Thought: <your step-by-step reasoning about what you need to discover next>\n"
+            "Thought: <at most 1-2 concise sentences stating the immediate tool needed and why>\n"
             "Action: <exact_tool_name>\n"
             "Action Input: {\"param_name\": \"value\"}\n\n"
             "When you have collected sufficient information to answer or complete the task:\n"
-            "Thought: <your final conclusion summary>\n"
+            "Thought: <1 concise sentence conclusion>\n"
             "Final Answer: <your full, detailed, professional Markdown report answering the user's goal>\n\n"
-            "CRITICAL RULES:\n"
+            "CRITICAL THINKING BUDGET & ANTI-LOOPING RULES:\n"
             "- Only call tools listed above.\n"
+            "- Keep 'Thought:' strictly to 1 or 2 concise sentences. NEVER write long speculative monologues or simulate answers.\n"
+            "- Ground truth comes from tool observations, not internal speculation.\n"
             "- Do NOT assume file system contents or invent data; inspect using sensory organs first.\n"
-            "- Once you have the facts, provide the comprehensive 'Final Answer:' immediately."
+            "- Do NOT repeat past queries or loops. Once you have the facts, provide the comprehensive 'Final Answer:' immediately."
         )
 
         conversation_history = [
@@ -277,10 +298,10 @@ class ReActController:
                     observation = f"[TOOL EXECUTION ERROR]: {call_res.get('error')}"
                 else:
                     observation_data = call_res.get("result", {})
-                    # Bound observation size to prevent context saturation
+                    # Bound observation size to prevent context saturation and thinking degeneration
                     obs_str = json.dumps(observation_data, default=str)
-                    if len(obs_str) > 3500:
-                        obs_str = obs_str[:3500] + "... [TRUNCATED TELEMETRY]"
+                    if len(obs_str) > 1200:
+                        obs_str = obs_str[:1200] + f"... [TRUNCATED TELEMETRY: {len(obs_str) - 1200} chars omitted]"
                     observation = obs_str
 
                 step = ReActStep(

@@ -72,6 +72,9 @@ class LLMConfig:
     model: str = "qwen3.5:9b"
     endpoint: str = "http://127.0.0.1:11434"
     timeout_sec: float = 120.0
+    temperature: float = 0.2
+    repeat_penalty: float = 1.15
+    num_predict: int = 1024
 
 
 @dataclass

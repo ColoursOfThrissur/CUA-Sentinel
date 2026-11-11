@@ -32,3 +32,6 @@ llm:
   model: "qwen3.5:9b"
   endpoint: "http://127.0.0.1:11434"
   timeout_sec: 120.0
+  temperature: 0.2
+  repeat_penalty: 1.15
+  num_predict: 1024

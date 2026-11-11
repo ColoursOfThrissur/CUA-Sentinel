@@ -23,10 +23,16 @@ class LLMGateway:
         endpoint: str = "http://127.0.0.1:11434",
         default_model: str = "qwen3.5:9b",
         timeout_sec: float = 120.0,
+        temperature: float = 0.2,
+        repeat_penalty: float = 1.15,
+        max_tokens: int = 2048,
     ) -> None:
         self.endpoint = endpoint.rstrip("/")
         self.default_model = default_model
         self.timeout_sec = timeout_sec
+        self.temperature = temperature
+        self.repeat_penalty = repeat_penalty
+        self.max_tokens = max_tokens
 
     def is_available(self) -> bool:
         """Check if Ollama service is reachable."""
@@ -42,19 +48,27 @@ class LLMGateway:
         prompt: str,
         system: str | None = None,
         model: str | None = None,
-        temperature: float = 0.2,
-        max_tokens: int = 4096,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        repeat_penalty: float | None = None,
+        strip_thinking: bool = True,
     ) -> str:
-        """Generate raw text response from local Ollama model."""
+        """Generate text response from local Ollama model with repetition penalties and anti-looping options."""
         target_model = model or self.default_model
+        use_temp = self.temperature if temperature is None else temperature
+        use_tokens = self.max_tokens if max_tokens is None else max_tokens
+        use_repeat_penalty = self.repeat_penalty if repeat_penalty is None else repeat_penalty
+
         payload: dict[str, Any] = {
             "model": target_model,
             "prompt": prompt,
             "stream": False,
             "options": {
-                "temperature": temperature,
+                "temperature": use_temp,
                 "top_p": 0.9,
-                "num_predict": max_tokens,
+                "repeat_penalty": use_repeat_penalty,
+                "repeat_last_n": 64,
+                "num_predict": use_tokens,
             },
         }
         if system:
@@ -79,6 +93,15 @@ class LLMGateway:
                     resp_text = re.sub(r"^Thinking Process:.*?(?=# |\*\*|## )", "", raw_thinking, flags=re.DOTALL).strip()
                     if not resp_text:
                         resp_text = raw_thinking
+
+                # Strip <think>...</think> blocks if requested to prevent thinking loops
+                if strip_thinking and "<think>" in resp_text:
+                    post_think = re.sub(r"^.*?<\/think>\s*", "", resp_text, flags=re.DOTALL).strip()
+                    if post_think:
+                        resp_text = post_think
+                    else:
+                        resp_text = re.sub(r"<\/?think>", "", resp_text).strip()
+
                 return resp_text
         except urllib.error.URLError as e:
             logger.error("LLM generation failed: %s", e)

@@ -95,8 +95,13 @@ class DAGPlanner:
         user_prompt = f"Goal to decompose into a collaborative multi-agent pipeline:\n'{goal}'"
         raw_text = gateway.generate(prompt=user_prompt, system=system_prompt, model=model, temperature=0.1)
 
+        # Strip <think>...</think> blocks if present so internal monologues don't break JSON parsing
+        cleaned_text = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL).strip()
+        if not cleaned_text:
+            cleaned_text = raw_text
+
         # Extract JSON block
-        json_match = re.search(r"\{.*\}", raw_text, re.DOTALL)
+        json_match = re.search(r"\{.*\}", cleaned_text, re.DOTALL)
         if not json_match:
             return None
 
