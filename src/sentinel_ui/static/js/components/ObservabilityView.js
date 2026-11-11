@@ -93,7 +93,7 @@ export function ObservabilityView({ telemetry, mistakes, skills, tools }) {
               </div>
             `}
 
-            {(mistakes || []).map((m, idx) => html`
+            ${(mistakes || []).map((m, idx) => html`
               <div
                 key=${idx}
                 className="card-glass"
@@ -137,7 +137,7 @@ export function ObservabilityView({ telemetry, mistakes, skills, tools }) {
               </div>
             `}
 
-            {(skills || []).map((sk, idx) => html`
+            ${(skills || []).map((sk, idx) => html`
               <div
                 key=${idx}
                 className="card-glass"
@@ -163,7 +163,7 @@ export function ObservabilityView({ telemetry, mistakes, skills, tools }) {
         <!-- Tab 3: Organ Catalog -->
         ${activeSubTab === 'organs' && html`
           <div className="spatial-grid-2col">
-            {(tools || []).map((tool, idx) => html`
+            ${(tools || []).map((tool, idx) => html`
               <div
                 key=${idx}
                 className="card-glass"

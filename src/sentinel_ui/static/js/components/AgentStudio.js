@@ -47,7 +47,7 @@ export function AgentStudio({ agents, onPublishAgent, onDraftAgent }) {
         </div>
 
         <div className="spatial-grid-2col">
-          {(agents || []).map((ag) => html`
+          ${(agents || []).map((ag) => html`
             <div
               key=${ag.agent_id}
               className="card-glass"
@@ -68,7 +68,7 @@ export function AgentStudio({ agents, onPublishAgent, onDraftAgent }) {
               <div style=${{ marginBottom: '14px' }}>
                 <div style=${{ fontSize: '11px', color: '#94a3b8', marginBottom: '6px' }}>Organ Privileges:</div>
                 <div style=${{ display: 'flex', flexWrap: 'wrap', gap: '5px' }}>
-                  {(ag.tools || []).map((tool, idx) => html`
+                  ${(ag.tools || []).map((tool, idx) => html`
                     <span
                       key=${idx}
                       style=${{

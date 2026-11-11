@@ -166,7 +166,7 @@ export function CommandDeck({
         `}
 
         <div style=${{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-          {(activeTasks || []).map((task) => html`
+          ${(activeTasks || []).map((task) => html`
             <div
               key=${task.task_id}
               className="card-glass"
