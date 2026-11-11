@@ -53,6 +53,7 @@ from sentinel_core.preflight_linter import PreFlightLinter
 from sentinel_core.contract_library import ContractLibrary
 from sentinel_core.prompt_scaffolder import PromptScaffolder, ScaffoldingLevel
 from sentinel_adaptive.pilot_controller import AdaptivePilotController
+from sentinel_adaptive.react_controller import ReActController
 
 logger = logging.getLogger("SentinelServer")
 
@@ -252,6 +253,13 @@ class DAGDispatchRequest(BaseModel):
 class DAGPlanRequest(BaseModel):
     goal: str
     model: str | None = None
+
+
+class AgentReActRequest(BaseModel):
+    goal: str
+    agent_id: str = "systems_reporter"
+    model: str | None = None
+    max_turns: int = 6
 
 
 @app.get("/api/config")
@@ -680,99 +688,31 @@ def execute_domain_step(
             expected_artifact.write_text(py_code, encoding="utf-8")
             return {"tool_result": {"exit_code": 0, "stdout": "Code generated successfully"}, "artifact_path": str(expected_artifact), "synthesized_code": py_code}
         else:
-            logger.info("Executing Report synthesis via LLM (%s) attempt %d", selected_model, attempt_num)
+            logger.info("Executing Autonomous ReAct Investigation loop via LLM (%s) attempt %d", selected_model, attempt_num)
             gw = LLMGateway(endpoint=config.llm.endpoint, default_model=selected_model)
-            sys_inst = (
-                "You are Sentinel's Autonomous Systems Reporter. Provide a clear, structured, comprehensive Markdown report solving the user's task. "
-                "Use headings, bullet points, and data tables where helpful."
-            )
-
-            # Ground-truth sensory perception injection for filesystem, drives, folders, games, downloads, and storage
-            sensory_context = ""
-            fs_keywords = [
-                "folder", "disk", "drive", "system", "storage", "largest", "game", "games",
-                "download", "downloads", "file", "files", "desktop", "documents", "space",
-                "directory", "directories", "size", "bytes", "gb", "mb", "hardware"
-            ]
-            if any(k in lower_goal for k in fs_keywords):
-                telemetry = {}
-                try:
-                    drives_info = run_tool_fenced("system_filesystem_inspect", {"mode": "list_drives"})
-                    if drives_info.get("success"):
-                        telemetry["drives"] = drives_info.get("drives")
-                except Exception as e:
-                    logger.warning("Sensory drive inspection failed: %s", e)
-
-                # Identify target user folder if mentioned
-                target_folder = None
-                for folder_kw in ["download", "downloads", "desktop", "documents", "pictures", "videos"]:
-                    if folder_kw in lower_goal:
-                        target_folder = folder_kw
-                        break
-
-                # 1. Largest Files query
-                if any(k in lower_goal for k in ["file", "files"]):
-                    try:
-                        top_files_res = run_tool_fenced(
-                            "system_filesystem_inspect",
-                            {"mode": "largest_files", "path": target_folder or "all", "limit": 10}
-                        )
-                        if top_files_res.get("success"):
-                            telemetry["largest_files"] = top_files_res.get("top_files")
-                            telemetry["scanned_locations"] = top_files_res.get("resolved_paths")
-                    except Exception as e:
-                        logger.warning("Sensory largest files inspection failed: %s", e)
-
-                # 2. Largest Folders query
-                if any(k in lower_goal for k in ["folder", "folders", "directory", "directories"]) or ("largest" in lower_goal and not any(k in lower_goal for k in ["file", "files"])):
-                    try:
-                        top_f = run_tool_fenced(
-                            "system_filesystem_inspect",
-                            {"mode": "largest_folders", "path": target_folder or "all", "limit": 10}
-                        )
-                        if top_f.get("success"):
-                            telemetry["largest_folders"] = top_f.get("top_folders")
-                    except Exception as e:
-                        logger.warning("Sensory largest folders inspection failed: %s", e)
-
-                # 3. Search / Find query (only if not already an explicit largest file/folder query)
-                if not telemetry.get("largest_files") and not telemetry.get("largest_folders"):
-                    if any(k in lower_goal for k in ["game", "games", "find", "search", "where", "locate"]):
-                        pat = "*games*" if "game" in lower_goal else "*"
-                        for w in lower_goal.split():
-                            clean_w = w.strip("?.,!\"'").lower()
-                            if clean_w in ["game", "games"]:
-                                pat = "*game*"
-                                break
-                        try:
-                            search_res = run_tool_fenced(
-                                "system_filesystem_inspect",
-                                {"mode": "find", "path": target_folder or "all", "pattern": pat, "limit": 15}
-                            )
-                            if search_res.get("success"):
-                                telemetry["search_matches"] = search_res.get("matches")
-                        except Exception as e:
-                            logger.warning("Sensory file search failed: %s", e)
-                        logger.warning("Sensory file search failed: %s", e)
-
-                if telemetry:
-                    sensory_context = (
-                        "\n\n[LIVE GROUND-TRUTH SENSORY TELEMETRY]:\n"
-                        "Sentinel has measured live, empirical filesystem & drive data directly from this host:\n"
-                        f"```json\n{json.dumps(telemetry, indent=2)}\n```\n"
-                        "IMPORTANT INSTRUCTION FOR REPORT SYNTHESIS:\n"
-                        "- You have real read-only sensory access to the system. Never claim you lack access to the file system or local storage.\n"
-                        "- Present the exact file paths, file names, drive paths, folder names, and sizes (GB / MB) reported in the telemetry above.\n"
-                        "- If the user asks for the largest file in a specific folder (such as Downloads), explicitly identify and rank the top largest files found in that location.\n"
-                        "- Synthesize a clean, professional executive report answering the user's specific query."
-                    )
-
-            prompt_rep = f"Task: {goal}{pred_context}{sensory_context}"
+            react_ctrl = ReActController(broker=broker, llm_gateway=gw, max_turns=6)
+            goal_with_pred = goal + (f"\n\n{pred_context}" if pred_context else "")
             if anti_patterns:
-                prompt_rep += f"\n[PREVIOUS DEFECT]:\n{anti_patterns}\nAddress the defect."
-            report_text = gw.generate(prompt=prompt_rep, system=sys_inst, model=selected_model)
-            expected_artifact.write_text(f"# Sentinel Task Report: {goal}\n\n**Agent**: `{effective_agent}` · **Model**: `{selected_model}` · **Timestamp**: {time.ctime()}\n\n---\n\n{report_text}\n", encoding="utf-8")
-            return {"tool_result": {"exit_code": 0, "stdout": "Report written successfully"}, "artifact_path": str(expected_artifact)}
+                goal_with_pred += f"\n\n[PREVIOUS DEFECT TO AVOID]:\n{anti_patterns}"
+
+            react_res = react_ctrl.run_react_loop(
+                task_id=task_id,
+                attempt_id=att_id,
+                lease_token=lease,
+                goal=goal_with_pred,
+                agent_id=effective_agent,
+                output_artifact_path=str(expected_artifact),
+                model=selected_model,
+                cancel_event=cancel_evt,
+            )
+            return {
+                "tool_result": {
+                    "exit_code": 0 if react_res.success else 1,
+                    "stdout": f"ReAct investigation completed in {react_res.turns_taken} turn(s)",
+                },
+                "artifact_path": str(expected_artifact),
+                "react_trajectory": [s.to_dict() for s in react_res.trajectory],
+            }
 
     def verifier(output: dict) -> VerificationResult:
         p = Path(output.get("artifact_path", ""))
@@ -979,6 +919,36 @@ def dispatch_dag(req: DAGDispatchRequest):
         threading.Thread(target=run_in_bg, daemon=True).start()
         return {"success": True, "dag_id": dag_id}
     except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/agent/react")
+def run_agent_react(req: AgentReActRequest):
+    """Executes a live multi-turn ReAct reasoning loop with monotonic lease fencing."""
+    try:
+        task_id = f"react_{int(time.time())}"
+        state_machine.create_task(task_id, title=req.goal, max_attempts=1)
+        task, lease_rec = state_machine.start_next_attempt(task_id)
+        gw = LLMGateway(endpoint=config.llm.endpoint, default_model=req.model or config.llm.model)
+        react_ctrl = ReActController(broker=broker, llm_gateway=gw, max_turns=req.max_turns)
+        out_art = workspaces_dir / f"{task_id}.md"
+        res = react_ctrl.run_react_loop(
+            task_id=task_id,
+            attempt_id=lease_rec.attempt_id,
+            lease_token=lease_rec.lease_token,
+            goal=req.goal,
+            agent_id=req.agent_id,
+            output_artifact_path=str(out_art),
+            model=req.model or config.llm.model,
+        )
+        if res.success:
+            state_machine.transition_to_verifying(task_id, lease_rec.attempt_id, lease_rec.lease_token)
+            state_machine.commit_success(task_id, lease_rec.attempt_id, lease_rec.lease_token)
+        else:
+            state_machine.handle_verification_failure(task_id, lease_rec.attempt_id, lease_rec.lease_token, res.error or "ReAct loop failed")
+        return res.to_dict()
+    except Exception as e:
+        logger.exception("ReAct endpoint error: %s", e)
         raise HTTPException(status_code=400, detail=str(e))
 
 
