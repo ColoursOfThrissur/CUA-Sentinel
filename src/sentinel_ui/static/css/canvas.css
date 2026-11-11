@@ -10,20 +10,20 @@
 
 .canvas-container {
   width: 100%;
-  max-width: 1440px;
-  margin: 0 auto;
-  padding: 85px 28px 140px 28px;
+  max-width: 100%;
+  margin: 0;
+  padding: 82px 20px 140px 20px;
   flex: 1;
 }
 
 /* Floating Top Pill Bar */
 .topbar-spatial {
   position: fixed;
-  top: 16px;
+  top: 12px;
   left: 50%;
   transform: translateX(-50%);
-  width: calc(100% - 48px);
-  max-width: 1380px;
+  width: calc(100% - 32px);
+  max-width: 100%;
   height: 56px;
   background: var(--bg-glass);
   backdrop-filter: var(--blur-glass);
@@ -158,11 +158,11 @@
 /* Floating Omnibar at Canvas Bottom */
 .omnibar-anchor {
   position: fixed;
-  bottom: 24px;
+  bottom: 20px;
   left: 50%;
   transform: translateX(-50%);
-  width: calc(100% - 48px);
-  max-width: 980px;
+  width: calc(100% - 32px);
+  max-width: 1280px;
   z-index: 100;
 }
 
