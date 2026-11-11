@@ -44,6 +44,7 @@ from sentinel_broker.organs.motor import register_motor_organs
 from sentinel_broker.organs.blender import register_blender_organs
 from sentinel_broker.organs.blender_prompts import synthesize_blender_script
 from sentinel_broker.organs.data_organ import register_data_organs
+from sentinel_broker.organs.web_organ import register_web_organs
 from sentinel_runner.appcontainer_host import AppContainerHost
 from sentinel_core.llm_gateway import LLMGateway
 from sentinel_core.preflight_linter import PreFlightLinter
@@ -79,15 +80,26 @@ register_sensory_organs(tool_registry)
 register_motor_organs(tool_registry)
 register_blender_organs(tool_registry)
 register_data_organs(tool_registry)
+side_effects = SideEffectLedger(db)
+register_web_organs(
+    tool_registry,
+    allowed_domains=config.network_policy.allowed_domains,
+    block_private_ips=config.network_policy.block_private_ips,
+    ledger=side_effects,
+)
 skill_bank = SkillBank(db, config.storage.skills_dir, tool_registry=tool_registry)
 skill_bank.register_distilled_skills_into_broker(tool_registry)
 
 # Agent Registry & Standard Gate A Agents
 agent_registry = AgentRegistry(db)
 
-# Broker & Fenced PDP Policy Decision Point (AT-A-05, AT-B-07 to AT-B-10)
-side_effects = SideEffectLedger(db)
-pdp = PolicyDecisionPoint(state_machine.leases, tool_registry, agent_registry)
+# Broker & Fenced PDP Policy Decision Point (AT-A-05, AT-B-07 to AT-B-10, R17, R19)
+pdp = PolicyDecisionPoint(
+    state_machine.leases,
+    tool_registry,
+    agent_registry,
+    allowed_domains=config.network_policy.allowed_domains,
+)
 broker = ExecutionBroker(pdp, tool_registry, side_effects)
 
 # AppContainer Host Bridge (Windows 11 isolation runtime)
@@ -121,7 +133,7 @@ def init_standard_agents():
             description="Analyzes CSV datasets, computes aggregations, and synthesizes analytical reports.",
             author="Sentinel Biological Systems",
             capabilities=["data:csv", "data:stats", "data:report", "skill:compose"],
-            allowed_organs=["python_sandbox_run", "csv_analyze_and_report", "file_transform", "execute_skill", "skill_*"],
+            allowed_organs=["python_sandbox_run", "csv_analyze_and_report", "file_transform", "execute_skill", "skill_*", "broker_http_get"],
         ),
         AgentManifest(
             agent_id="code_engineer",
@@ -130,7 +142,7 @@ def init_standard_agents():
             description="Synthesizes Python scripts, modules, algorithms, and executes sandboxed code.",
             author="Sentinel Biological Systems",
             capabilities=["code:python", "code:execution", "code:testing", "skill:compose"],
-            allowed_organs=["python_sandbox_run", "windows_command", "execute_skill", "skill_*"],
+            allowed_organs=["python_sandbox_run", "windows_command", "execute_skill", "skill_*", "broker_http_get"],
         ),
         AgentManifest(
             agent_id="systems_reporter",
@@ -139,7 +151,7 @@ def init_standard_agents():
             description="Synthesizes executive markdown reports and system health briefings.",
             author="Sentinel Biological Systems",
             capabilities=["analysis:markdown", "reporting:executive", "skill:compose"],
-            allowed_organs=["python_sandbox_run", "file_transform", "execute_skill", "skill_*"],
+            allowed_organs=["python_sandbox_run", "file_transform", "execute_skill", "skill_*", "broker_http_get"],
         ),
     ]
 
@@ -152,11 +164,11 @@ def init_standard_agents():
             except Exception:
                 pass
         else:
-            # Sync allowed_organs to include execute_skill and skill_*
+            # Sync allowed_organs to include execute_skill, skill_*, and broker_http_get
             curr_manifest = json.loads(existing["manifest_json"])
             organs = curr_manifest.get("allowed_organs", [])
             updated = False
-            for req_org in ["execute_skill", "skill_*"]:
+            for req_org in ["execute_skill", "skill_*", "broker_http_get"]:
                 if req_org not in organs:
                     organs.append(req_org)
                     updated = True
@@ -1177,6 +1189,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <label class="flex items-center gap-2 cursor-pointer text-slate-300">
               <input type="checkbox" value="window_inspect" class="organ-checkbox rounded bg-slate-900 border-slate-700 text-emerald-500">
               <span>window_inspect</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer text-slate-300">
+              <input type="checkbox" value="broker_http_get" checked class="organ-checkbox rounded bg-slate-900 border-slate-700 text-emerald-500">
+              <span>broker_http_get</span>
             </label>
           </div>
         </div>

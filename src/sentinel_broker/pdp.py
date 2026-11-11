@@ -24,10 +24,12 @@ class PolicyDecisionPoint:
         leases: LeaseManager,
         tool_registry: ToolRegistry,
         agent_registry: AgentRegistry | None = None,
+        allowed_domains: list[str] | None = None,
     ):
         self.leases = leases
         self.tool_registry = tool_registry
         self.agent_registry = agent_registry
+        self.allowed_domains = allowed_domains
 
     def evaluate(
         self,
@@ -79,6 +81,28 @@ class PolicyDecisionPoint:
                 status_code="REJECTED_IRREVERSIBLE_DENIED",
                 reason=f"Irreversible tool '{tool_name}' requires explicit operator or context clearance.",
             )
+
+        # 5. Network Egress Policy Check (R17, R19)
+        if tool_name == "broker_http_get" and self.allowed_domains is not None:
+            import fnmatch
+            import urllib.parse
+            url = params.get("url", "")
+            hostname = (urllib.parse.urlparse(url).hostname or "").lower()
+            allowed = False
+            for pat in self.allowed_domains:
+                p = pat.lower()
+                if p == "*" or p == "*.*" or fnmatch.fnmatch(hostname, p):
+                    allowed = True
+                    break
+                if p.startswith("*.") and hostname == p[2:]:
+                    allowed = True
+                    break
+            if not allowed:
+                return AuthorizationDecision(
+                    allowed=False,
+                    status_code="REJECTED_DOMAIN_NOT_ALLOWED",
+                    reason=f"PDP Egress Policy: Domain '{hostname}' is not in allowed_domains list.",
+                )
 
         return AuthorizationDecision(
             allowed=True,
