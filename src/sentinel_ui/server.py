@@ -689,9 +689,13 @@ def execute_domain_step(
                 "Use headings, bullet points, and data tables where helpful."
             )
 
-            # Ground-truth sensory perception injection for filesystem, drives, folders, games, and storage
+            # Ground-truth sensory perception injection for filesystem, drives, folders, games, downloads, and storage
             sensory_context = ""
-            fs_keywords = ["folder", "disk", "drive", "system", "storage", "largest", "game", "games", "space", "file", "directory", "size", "bytes", "gb", "hardware"]
+            fs_keywords = [
+                "folder", "disk", "drive", "system", "storage", "largest", "game", "games",
+                "download", "downloads", "file", "files", "desktop", "documents", "space",
+                "directory", "directories", "size", "bytes", "gb", "mb", "hardware"
+            ]
             if any(k in lower_goal for k in fs_keywords):
                 telemetry = {}
                 try:
@@ -701,26 +705,56 @@ def execute_domain_step(
                 except Exception as e:
                     logger.warning("Sensory drive inspection failed: %s", e)
 
-                if any(k in lower_goal for k in ["largest", "big", "size", "heavy", "folder", "directory"]):
+                # Identify target user folder if mentioned
+                target_folder = None
+                for folder_kw in ["download", "downloads", "desktop", "documents", "pictures", "videos"]:
+                    if folder_kw in lower_goal:
+                        target_folder = folder_kw
+                        break
+
+                # 1. Largest Files query
+                if any(k in lower_goal for k in ["file", "files"]):
                     try:
-                        top_f = run_tool_fenced("system_filesystem_inspect", {"mode": "largest_folders", "path": "all", "limit": 10})
+                        top_files_res = run_tool_fenced(
+                            "system_filesystem_inspect",
+                            {"mode": "largest_files", "path": target_folder or "all", "limit": 10}
+                        )
+                        if top_files_res.get("success"):
+                            telemetry["largest_files"] = top_files_res.get("top_files")
+                            telemetry["scanned_locations"] = top_files_res.get("resolved_paths")
+                    except Exception as e:
+                        logger.warning("Sensory largest files inspection failed: %s", e)
+
+                # 2. Largest Folders query
+                if any(k in lower_goal for k in ["folder", "folders", "directory", "directories"]) or ("largest" in lower_goal and not any(k in lower_goal for k in ["file", "files"])):
+                    try:
+                        top_f = run_tool_fenced(
+                            "system_filesystem_inspect",
+                            {"mode": "largest_folders", "path": target_folder or "all", "limit": 10}
+                        )
                         if top_f.get("success"):
                             telemetry["largest_folders"] = top_f.get("top_folders")
                     except Exception as e:
                         logger.warning("Sensory largest folders inspection failed: %s", e)
 
-                if any(k in lower_goal for k in ["game", "games", "find", "search", "where", "locate"]):
-                    pat = "*games*" if "game" in lower_goal else "*"
-                    for w in lower_goal.split():
-                        clean_w = w.strip("?.,!\"'").lower()
-                        if clean_w in ["game", "games"]:
-                            pat = "*game*"
-                            break
-                    try:
-                        search_res = run_tool_fenced("system_filesystem_inspect", {"mode": "find", "path": "all", "pattern": pat, "limit": 15})
-                        if search_res.get("success"):
-                            telemetry["search_matches"] = search_res.get("matches")
-                    except Exception as e:
+                # 3. Search / Find query (only if not already an explicit largest file/folder query)
+                if not telemetry.get("largest_files") and not telemetry.get("largest_folders"):
+                    if any(k in lower_goal for k in ["game", "games", "find", "search", "where", "locate"]):
+                        pat = "*games*" if "game" in lower_goal else "*"
+                        for w in lower_goal.split():
+                            clean_w = w.strip("?.,!\"'").lower()
+                            if clean_w in ["game", "games"]:
+                                pat = "*game*"
+                                break
+                        try:
+                            search_res = run_tool_fenced(
+                                "system_filesystem_inspect",
+                                {"mode": "find", "path": target_folder or "all", "pattern": pat, "limit": 15}
+                            )
+                            if search_res.get("success"):
+                                telemetry["search_matches"] = search_res.get("matches")
+                        except Exception as e:
+                            logger.warning("Sensory file search failed: %s", e)
                         logger.warning("Sensory file search failed: %s", e)
 
                 if telemetry:
@@ -730,8 +764,9 @@ def execute_domain_step(
                         f"```json\n{json.dumps(telemetry, indent=2)}\n```\n"
                         "IMPORTANT INSTRUCTION FOR REPORT SYNTHESIS:\n"
                         "- You have real read-only sensory access to the system. Never claim you lack access to the file system or local storage.\n"
-                        "- Present the exact drive paths, folder names, and sizes (GB / MB) reported in the telemetry above.\n"
-                        "- Synthesize a clean, professional executive report highlighting the top folders/drives found."
+                        "- Present the exact file paths, file names, drive paths, folder names, and sizes (GB / MB) reported in the telemetry above.\n"
+                        "- If the user asks for the largest file in a specific folder (such as Downloads), explicitly identify and rank the top largest files found in that location.\n"
+                        "- Synthesize a clean, professional executive report answering the user's specific query."
                     )
 
             prompt_rep = f"Task: {goal}{pred_context}{sensory_context}"

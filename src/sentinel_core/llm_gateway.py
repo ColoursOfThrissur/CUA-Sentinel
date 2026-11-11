@@ -43,7 +43,7 @@ class LLMGateway:
         system: str | None = None,
         model: str | None = None,
         temperature: float = 0.2,
-        max_tokens: int = 3072,
+        max_tokens: int = 4096,
     ) -> str:
         """Generate raw text response from local Ollama model."""
         target_model = model or self.default_model
@@ -74,7 +74,11 @@ class LLMGateway:
                 # If response was starved by reasoning token budget, fall back to thinking
                 if not resp_text and res_json.get("thinking"):
                     logger.warning("LLM response field empty; extracting content from thinking field")
-                    resp_text = res_json.get("thinking", "").strip()
+                    raw_thinking = res_json.get("thinking", "").strip()
+                    # Strip leading "Thinking Process:" if followed by actual markdown content
+                    resp_text = re.sub(r"^Thinking Process:.*?(?=# |\*\*|## )", "", raw_thinking, flags=re.DOTALL).strip()
+                    if not resp_text:
+                        resp_text = raw_thinking
                 return resp_text
         except urllib.error.URLError as e:
             logger.error("LLM generation failed: %s", e)

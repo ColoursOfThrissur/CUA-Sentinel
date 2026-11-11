@@ -119,22 +119,68 @@ def register_sensory_organs(registry: ToolRegistry):
     @registry.register(
         name="system_filesystem_inspect",
         description=(
-            "Provides safe, read-only perception of the local Windows filesystem across all mounted drives (C:, G:, etc.). "
-            "Supports listing drive metrics, discovering largest folders, finding directories by pattern, and reading file previews."
+            "Provides safe, read-only perception of the local Windows filesystem across all mounted drives (C:, G:, etc.) and user directories. "
+            "Supports listing drive metrics, discovering largest folders, discovering largest files, finding paths by pattern, and reading file previews."
         ),
         effect_class=EffectClass.READ_ONLY,
         parameters_schema={
-            "mode": "str (one of 'list_drives', 'largest_folders', 'find', 'read_file')",
-            "path": "str | None (drive or folder path, e.g. 'C:\\', 'G:\\', or 'all')",
-            "pattern": "str | None (search pattern, e.g. '*games*', '*project*')",
+            "mode": "str (one of 'list_drives', 'largest_folders', 'largest_files', 'find', 'read_file')",
+            "path": "str | None (drive or folder path, e.g. 'C:\\', 'G:\\', 'downloads', 'desktop', 'documents', or 'all')",
+            "pattern": "str | None (search pattern, e.g. '*games*', '*iso*', '*exe*')",
             "limit": "int | None (maximum results, default 5)",
         },
     )
     def system_filesystem_inspect(params: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
         mode = (params.get("mode") or "list_drives").lower()
         target_path = params.get("path") or "all"
-        pattern = params.get("pattern") or "*games*"
+        pattern = params.get("pattern") or "*"
         limit = int(params.get("limit") or 5)
+
+        def _resolve_paths(tp: str | None) -> list[str]:
+            if not tp or tp.lower() == "all":
+                roots = []
+                for part in psutil.disk_partitions(all=False):
+                    roots.append(part.mountpoint)
+                home = Path.home()
+                if (home / "Downloads").exists():
+                    roots.append(str(home / "Downloads"))
+                return roots
+
+            # 1. If it's already an existing file or directory on the filesystem
+            p = Path(tp)
+            if p.exists():
+                return [str(p.resolve())]
+
+            # 2. Known user directory aliases
+            home = Path.home()
+            aliases = {
+                "download": home / "Downloads",
+                "downloads": home / "Downloads",
+                "desktop": home / "Desktop",
+                "documents": home / "Documents",
+                "document": home / "Documents",
+                "pictures": home / "Pictures",
+                "videos": home / "Videos",
+                "music": home / "Music",
+                "home": home,
+                "userprofile": home,
+            }
+            clean_tp = tp.strip().lower()
+            for k, alias_p in aliases.items():
+                if clean_tp == k or clean_tp == f"{k}s" or clean_tp.startswith(f"{k} ") or f" {k}" in clean_tp:
+                    if alias_p.exists():
+                        return [str(alias_p)]
+
+            # 3. Check across drives for folder named tp
+            candidates = []
+            for part in psutil.disk_partitions(all=False):
+                cand = Path(part.mountpoint) / tp
+                if cand.exists():
+                    candidates.append(str(cand))
+            if candidates:
+                return candidates
+
+            return [tp]
 
         # 1. List Drives & Partition Space
         if mode == "list_drives":
@@ -167,14 +213,8 @@ def register_sensory_organs(registry: ToolRegistry):
             return {"success": True, "mode": "list_drives", "drives": drives_info}
 
         # 2. Largest Folders Analysis
-        elif mode == "largest_folders":
-            search_roots = []
-            if target_path == "all" or not target_path:
-                for part in psutil.disk_partitions(all=False):
-                    search_roots.append(part.mountpoint)
-            else:
-                search_roots.append(target_path)
-
+        elif mode in ("largest_folders", "top_folders"):
+            search_roots = _resolve_paths(target_path)
             folder_stats = []
 
             def calc_dir_size(dp: str, max_files: int = 30000) -> int:
@@ -182,6 +222,7 @@ def register_sensory_organs(registry: ToolRegistry):
                 f_count = 0
                 try:
                     for root, dirs, files in os.walk(dp):
+                        dirs[:] = [d for d in dirs if not d.startswith("$") and d != "System Volume Information"]
                         for f in files:
                             f_count += 1
                             if f_count > max_files:
@@ -196,9 +237,11 @@ def register_sensory_organs(registry: ToolRegistry):
                     pass
                 return total_sz
 
-            for root_drive in search_roots:
+            for root_dir in search_roots:
+                if not os.path.exists(root_dir):
+                    continue
                 try:
-                    for entry in os.scandir(root_drive):
+                    for entry in os.scandir(root_dir):
                         if entry.is_dir() and not entry.name.startswith("$") and entry.name != "System Volume Information":
                             sz = calc_dir_size(entry.path)
                             folder_stats.append({
@@ -216,11 +259,57 @@ def register_sensory_organs(registry: ToolRegistry):
                 "success": True,
                 "mode": "largest_folders",
                 "target_path": target_path,
+                "resolved_paths": search_roots,
                 "count": len(folder_stats),
                 "top_folders": folder_stats[:limit],
             }
 
-        # 3. Find Folders / Files by Pattern
+        # 3. Largest Files Analysis
+        elif mode in ("largest_files", "top_files"):
+            search_roots = _resolve_paths(target_path)
+            file_stats = []
+            max_scanned_files = 30000
+            scanned = 0
+
+            for root_dir in search_roots:
+                if not os.path.exists(root_dir):
+                    continue
+                try:
+                    for root, dirs, files in os.walk(root_dir):
+                        dirs[:] = [d for d in dirs if not d.startswith("$") and d != "System Volume Information"]
+                        for f in files:
+                            scanned += 1
+                            if scanned > max_scanned_files:
+                                break
+                            full_fp = os.path.join(root, f)
+                            try:
+                                sz = os.path.getsize(full_fp)
+                                file_stats.append({
+                                    "path": full_fp,
+                                    "name": f,
+                                    "size_bytes": sz,
+                                    "size_gb": round(sz / (1024**3), 2),
+                                    "size_mb": round(sz / (1024**2), 2),
+                                    "extension": os.path.splitext(f)[1].lower(),
+                                })
+                            except Exception:
+                                pass
+                        if scanned > max_scanned_files:
+                            break
+                except Exception:
+                    pass
+
+            file_stats.sort(key=lambda x: x["size_bytes"], reverse=True)
+            return {
+                "success": True,
+                "mode": "largest_files",
+                "target_path": target_path,
+                "resolved_paths": search_roots,
+                "count": len(file_stats),
+                "top_files": file_stats[:limit],
+            }
+
+        # 4. Find Folders / Files by Pattern
         elif mode in ("find", "search"):
             pat = pattern.lower().strip()
             if not pat.startswith("*"):
@@ -228,18 +317,14 @@ def register_sensory_organs(registry: ToolRegistry):
             if not pat.endswith("*"):
                 pat = f"{pat}*"
 
-            search_roots = []
-            if target_path == "all" or not target_path:
-                for part in psutil.disk_partitions(all=False):
-                    search_roots.append(part.mountpoint)
-            else:
-                search_roots.append(target_path)
-
+            search_roots = _resolve_paths(target_path)
             matches = []
-            for root_drive in search_roots:
+            for root_dir in search_roots:
+                if not os.path.exists(root_dir):
+                    continue
                 try:
-                    for root, dirs, files in os.walk(root_drive):
-                        depth = root[len(root_drive):].count(os.sep)
+                    for root, dirs, files in os.walk(root_dir):
+                        depth = root[len(root_dir):].count(os.sep)
                         if depth > 3:
                             del dirs[:]
                             continue
@@ -269,12 +354,15 @@ def register_sensory_organs(registry: ToolRegistry):
                 "success": True,
                 "mode": "search",
                 "pattern": pattern,
+                "resolved_paths": search_roots,
                 "matches": matches[:limit],
             }
 
-        # 4. Read File Content Preview
+        # 5. Read File Content Preview
         elif mode == "read_file":
-            fp = Path(target_path)
+            resolved = _resolve_paths(target_path)
+            actual_path = resolved[0] if resolved else target_path
+            fp = Path(actual_path)
             if not fp.exists() or not fp.is_file():
                 return {"success": False, "error": f"File '{target_path}' not found."}
             try:

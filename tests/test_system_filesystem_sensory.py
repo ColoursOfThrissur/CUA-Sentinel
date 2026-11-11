@@ -66,6 +66,22 @@ def test_system_filesystem_inspect_largest_folders(test_setup):
     assert sizes == sorted(sizes, reverse=True)
 
 
+def test_system_filesystem_inspect_largest_files_downloads(test_setup):
+    _, registry, _, _, _ = test_setup
+    res = registry.execute_tool(
+        "system_filesystem_inspect",
+        {"mode": "largest_files", "path": "downloads", "limit": 5},
+    )
+    assert res.get("success") is True
+    assert "top_files" in res
+    assert len(res["top_files"]) > 0
+    # Files must be sorted descending by size
+    sizes = [f["size_bytes"] for f in res["top_files"]]
+    assert sizes == sorted(sizes, reverse=True)
+    # Check that paths resolved to Downloads
+    assert any("downloads" in f["path"].lower() for f in res["top_files"])
+
+
 def test_system_filesystem_inspect_find(test_setup):
     _, registry, _, _, _ = test_setup
     res = registry.execute_tool(
