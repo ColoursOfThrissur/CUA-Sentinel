@@ -54,7 +54,10 @@ export function App() {
       if (runs.status === 'fulfilled') {
         setDagRuns(runs.value);
         if (runs.value && runs.value.length > 0 && !selectedDagRun) {
-          setSelectedDagRun(runs.value[0]);
+          // Fetch full DAG details including step nodes
+          api.getDagStatus(runs.value[0].id)
+            .then((fullRun) => setSelectedDagRun(fullRun))
+            .catch(() => setSelectedDagRun(runs.value[0]));
         }
       }
       if (msts.status === 'fulfilled') setMistakes(msts.value);
@@ -78,6 +81,16 @@ export function App() {
     }, 3000);
     return () => clearInterval(interval);
   }, []);
+
+  // Select DAG Run & fetch full steps
+  const handleSelectRun = async (run) => {
+    try {
+      const fullRun = await api.getDagStatus(run.id);
+      setSelectedDagRun(fullRun);
+    } catch (e) {
+      setSelectedDagRun(run);
+    }
+  };
 
   // Dispatch Action from Omnibar
   const handleDispatch = async ({ mode, prompt, model, agentId }) => {
@@ -118,14 +131,10 @@ export function App() {
     } else if (mode === 'dag') {
       try {
         setActiveTab('dag');
-        // Autonomous DAG Planning
-        const planned = await api.planDag({
+        // Dispatch autonomous goal or planner
+        const runRes = await api.dispatchDag({
           goal: prompt,
           model: model,
-        });
-        // Dispatch the planned steps
-        const runRes = await api.dispatchDag({
-          steps: planned.steps,
         });
         setSelectedDagRun(runRes);
         await loadAll();
@@ -138,11 +147,11 @@ export function App() {
   };
 
   // Run a Pre-built DAG Template
-  const handleRunTemplate = async (templateName) => {
+  const handleRunTemplate = async (templateId) => {
     setIsDispatching(true);
     try {
       const runRes = await api.dispatchDag({
-        template_name: templateName,
+        template: templateId,
       });
       setSelectedDagRun(runRes);
       setActiveTab('dag');
@@ -212,7 +221,7 @@ export function App() {
             templates=${dagTemplates}
             activeRuns=${dagRuns}
             selectedRun=${selectedDagRun}
-            onSelectRun=${setSelectedDagRun}
+            onSelectRun=${handleSelectRun}
             onRunTemplate=${handleRunTemplate}
             onCancelDag=${handleCancelDag}
             onOpenViewport=${setActiveViewportArtifact}

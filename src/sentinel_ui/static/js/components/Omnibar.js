@@ -1,4 +1,4 @@
-import { useState, useRef } from 'https://esm.sh/react@18.3.1';
+import { useState, useRef, useEffect } from 'https://esm.sh/react@18.3.1';
 import { html } from '../html.js';
 import { Icon } from '../icons.js';
 
@@ -15,6 +15,23 @@ export function Omnibar({ models, agents, onDispatch, isDispatching }) {
   const [selectedModel, setSelectedModel] = useState('qwen3.5:9b');
   const [selectedAgent, setSelectedAgent] = useState('systems_reporter');
   const textareaRef = useRef(null);
+
+  // Sync default agent if current is not in list
+  useEffect(() => {
+    if (agents && agents.length > 0) {
+      const hasCurrent = agents.some((a) => (a.id || a.agent_id) === selectedAgent);
+      if (!hasCurrent) {
+        setSelectedAgent(agents[0].id || agents[0].agent_id);
+      }
+    }
+  }, [agents]);
+
+  // Sync default model if current is not in list
+  useEffect(() => {
+    if (models && models.length > 0 && !models.includes(selectedModel)) {
+      setSelectedModel(models[0]);
+    }
+  }, [models]);
 
   const handleSubmit = (e) => {
     if (e) e.preventDefault();
@@ -80,9 +97,13 @@ export function Omnibar({ models, agents, onDispatch, isDispatching }) {
                 value=${selectedAgent}
                 onChange=${(e) => setSelectedAgent(e.target.value)}
               >
-                ${(agents || []).map((ag) => html`
-                  <option key=${ag.agent_id} value=${ag.agent_id}>${ag.name} (${ag.domain})</option>
-                `)}
+                ${(agents || []).map((ag) => {
+                  const agId = ag.id || ag.agent_id;
+                  const domain = ag.manifest?.capabilities?.[0] || ag.domain || 'code';
+                  return html`
+                    <option key=${agId} value=${agId}>${ag.name} (${domain})</option>
+                  `;
+                })}
               </select>
             `}
 

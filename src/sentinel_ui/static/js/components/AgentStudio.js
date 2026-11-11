@@ -34,7 +34,7 @@ export function AgentStudio({ agents, onPublishAgent, onDraftAgent }) {
             </div>
             <div>
               <div className="card-title">Gate A Agent Registry</div>
-              <div className="card-subtitle">Specialized cognitive personas · Fenced organ boundaries · Sandboxed execution</div>
+              <div className="card-subtitle">Specialized cognitive personas · Fenced organ boundaries · Sandboxed execution (${(agents || []).length} registered)</div>
             </div>
           </div>
 
@@ -45,52 +45,66 @@ export function AgentStudio({ agents, onPublishAgent, onDraftAgent }) {
         </div>
 
         <div className="spatial-grid-2col">
-          ${(agents || []).map((ag) => html`
-            <div
-              key=${ag.agent_id}
-              className="card-glass"
-              style=${{ padding: '18px', background: 'rgba(255, 255, 255, 0.02)' }}
-            >
-              <div style=${{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
-                <div style=${{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span style=${{ fontSize: '15px', fontWeight: 600, color: '#f8fafc' }}>${ag.name}</span>
-                  <span className=${`domain-badge ${ag.domain}`}>${ag.domain}</span>
+          ${(agents || []).map((ag) => {
+            const agentId = ag.id || ag.agent_id;
+            const domain = ag.manifest?.capabilities?.[0] || ag.domain || 'code';
+            const tools = ag.manifest?.allowed_organs || ag.tools || [];
+            const desc = ag.manifest?.description || ag.description || '';
+            const status = ag.status || 'Published';
+
+            return html`
+              <div
+                key=${agentId}
+                className="card-glass"
+                style=${{ padding: '18px', background: 'rgba(255, 255, 255, 0.02)' }}
+              >
+                <div style=${{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+                  <div style=${{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style=${{ fontSize: '15px', fontWeight: 600, color: '#f8fafc' }}>${ag.name}</span>
+                    <span className=${`domain-badge ${domain}`}>${domain}</span>
+                  </div>
+                  <span className="pill success">${status}</span>
                 </div>
-                <span className="pill success">Gate A Verified</span>
-              </div>
 
-              <div style=${{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: '#64748b', marginBottom: '12px' }}>
-                ID: ${ag.agent_id}
-              </div>
+                <div style=${{ fontSize: '11px', fontFamily: 'var(--font-mono)', color: '#64748b', marginBottom: '8px' }}>
+                  ID: ${agentId}
+                </div>
 
-              <div style=${{ marginBottom: '14px' }}>
-                <div style=${{ fontSize: '11px', color: '#94a3b8', marginBottom: '6px' }}>Organ Privileges:</div>
-                <div style=${{ display: 'flex', flexWrap: 'wrap', gap: '5px' }}>
-                  ${(ag.tools || []).map((tool, idx) => html`
-                    <span
-                      key=${idx}
-                      style=${{
-                        fontFamily: 'var(--font-mono)',
-                        fontSize: '10px',
-                        background: 'rgba(255, 255, 255, 0.04)',
-                        border: '1px solid rgba(255, 255, 255, 0.08)',
-                        padding: '2px 6px',
-                        borderRadius: '4px',
-                        color: '#cbd5e1',
-                      }}
-                    >
-                      ${tool}
-                    </span>
-                  `)}
+                ${desc && html`
+                  <div style=${{ fontSize: '12px', color: '#94a3b8', marginBottom: '12px', lineHeight: 1.5 }}>
+                    ${desc}
+                  </div>
+                `}
+
+                <div style=${{ marginBottom: '14px' }}>
+                  <div style=${{ fontSize: '11px', color: '#64748b', marginBottom: '6px' }}>Organ Privileges (${tools.length}):</div>
+                  <div style=${{ display: 'flex', flexWrap: 'wrap', gap: '5px' }}>
+                    ${tools.map((tool, idx) => html`
+                      <span
+                        key=${idx}
+                        style=${{
+                          fontFamily: 'var(--font-mono)',
+                          fontSize: '10px',
+                          background: 'rgba(255, 255, 255, 0.04)',
+                          border: '1px solid rgba(255, 255, 255, 0.08)',
+                          padding: '2px 6px',
+                          borderRadius: '4px',
+                          color: '#cbd5e1',
+                        }}
+                      >
+                        ${tool}
+                      </span>
+                    `)}
+                  </div>
+                </div>
+
+                <div style=${{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '11px', color: '#64748b' }}>
+                  <span>Memory Cap: <strong>${ag.manifest?.max_memory_mb || 100} MB</strong></span>
+                  <span>CPU Cap: <strong>${ag.manifest?.max_cpu_percent || 12.5}%</strong></span>
                 </div>
               </div>
-
-              <div style=${{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '11px', color: '#64748b' }}>
-                <span>Timeout: <strong>${ag.timeout_seconds || 60}s</strong></span>
-                <span>Temperature: <strong>${ag.temperature || 0.2}</strong></span>
-              </div>
-            </div>
-          `)}
+            `;
+          })}
         </div>
       </div>
 

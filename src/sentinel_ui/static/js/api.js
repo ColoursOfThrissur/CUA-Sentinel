@@ -36,7 +36,11 @@ export const api = {
   // Telemetry & Hardware
   getTelemetry: () => request('/api/telemetry'),
   getConfig: () => request('/api/config'),
-  getModels: () => request('/api/models'),
+  getModels: async () => {
+    const data = await request('/api/models');
+    if (Array.isArray(data)) return data;
+    return data?.available_models || [];
+  },
 
   // Tasks & Dispatch
   getTasks: () => request('/api/tasks'),

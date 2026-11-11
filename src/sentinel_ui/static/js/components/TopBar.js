@@ -2,11 +2,12 @@ import { html } from '../html.js';
 import { Icon } from '../icons.js';
 
 export function TopBar({ activeTab, onTabChange, telemetry, onRefresh, refreshing }) {
-  const ramAvailable = telemetry?.system?.available_ram_mb || 0;
-  const ramFloor = telemetry?.ram_floor_mb || 2500;
-  const lease = telemetry?.lease?.active_monotonic_lease ?? '--';
-  const mistakeCount = telemetry?.mistakes_learned || 0;
-  const skillCount = telemetry?.skills_in_bank || 0;
+  const ramAvailable = telemetry?.hardware?.available_ram_mb ?? telemetry?.system?.available_ram_mb ?? 0;
+  const ramFloor = 2500;
+  const lease = telemetry?.counts?.highest_lease_token ?? telemetry?.lease?.active_monotonic_lease ?? '--';
+  const mistakeCount = telemetry?.counts?.mistakes ?? telemetry?.mistakes_learned ?? 0;
+  const skillCount = telemetry?.counts?.skills ?? telemetry?.skills_in_bank ?? 0;
+  const cpuPercent = telemetry?.hardware?.cpu_percent ?? 0;
 
   return html`
     <header className="topbar-spatial">
@@ -53,13 +54,18 @@ export function TopBar({ activeTab, onTabChange, telemetry, onRefresh, refreshin
       <div className="telemetry-cluster">
         <div className="metric-pill" title="Hardware RAM Floor vs Target Floor">
           <span className="label">RAM</span>
-          <span className="value highlight">${Math.round(ramAvailable)}MB</span>
-          <span className="label">/ ${ramFloor}MB</span>
+          <span className="value highlight">${Math.round(ramAvailable)} MB</span>
+          <span className="label">/ ${ramFloor} MB</span>
         </div>
 
         <div className="metric-pill" title="AT-B-10 Monotonic Lease Counter">
           <span className="label">Lease</span>
           <span className="value">#${lease}</span>
+        </div>
+
+        <div className="metric-pill" title="System CPU Utilization">
+          <span className="label">CPU</span>
+          <span className="value">${Math.round(cpuPercent)}%</span>
         </div>
 
         <div className="metric-pill" title="Episodic Mistakes Distilled into Memory">
