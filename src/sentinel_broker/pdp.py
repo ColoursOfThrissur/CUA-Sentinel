@@ -4,6 +4,7 @@ Fails closed outside the worker boundary, enforcing monotonic lease tokens and a
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from sentinel_core.leases import LeaseManager
@@ -25,11 +26,13 @@ class PolicyDecisionPoint:
         tool_registry: ToolRegistry,
         agent_registry: AgentRegistry | None = None,
         allowed_domains: list[str] | None = None,
+        allowed_workspaces_dir: str | Path | None = None,
     ):
         self.leases = leases
         self.tool_registry = tool_registry
         self.agent_registry = agent_registry
         self.allowed_domains = allowed_domains
+        self.allowed_workspaces_dir = Path(allowed_workspaces_dir).resolve() if allowed_workspaces_dir else None
 
     def evaluate(
         self,
@@ -103,6 +106,38 @@ class PolicyDecisionPoint:
                     status_code="REJECTED_DOMAIN_NOT_ALLOWED",
                     reason=f"PDP Egress Policy: Domain '{hostname}' is not in allowed_domains list.",
                 )
+
+        # 6. Workspace Path Isolation Check (Fail-closed outside workspace for writes)
+        if self.allowed_workspaces_dir is not None:
+            write_path_keys = [
+                "output_path",
+                "output_obj_path",
+                "output_csv_path",
+                "output_artifact_path",
+                "target_path",
+                "dest_path",
+                "destination",
+            ]
+            tool = self.tool_registry.get_tool(tool_name)
+            is_write_tool = tool and tool.effect_class.value != "READ_ONLY"
+            if is_write_tool:
+                for key in write_path_keys:
+                    val = params.get(key)
+                    if val and isinstance(val, (str, Path)):
+                        try:
+                            resolved_val = Path(val).resolve()
+                            if not (resolved_val == self.allowed_workspaces_dir or self.allowed_workspaces_dir in resolved_val.parents):
+                                return AuthorizationDecision(
+                                    allowed=False,
+                                    status_code="REJECTED_WRITE_OUTSIDE_WORKSPACE",
+                                    reason=f"PDP Storage Boundary: Target write path '{val}' resolves outside permitted workspace '{self.allowed_workspaces_dir}'.",
+                                )
+                        except Exception as e:
+                            return AuthorizationDecision(
+                                allowed=False,
+                                status_code="REJECTED_INVALID_PATH",
+                                reason=f"PDP Storage Boundary: Invalid path format '{val}': {e}",
+                            )
 
         return AuthorizationDecision(
             allowed=True,

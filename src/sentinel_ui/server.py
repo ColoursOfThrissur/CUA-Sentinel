@@ -64,13 +64,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-workspaces_dir = Path("workspaces").resolve()
-workspaces_dir.mkdir(parents=True, exist_ok=True)
-app.mount("/workspaces", StaticFiles(directory=str(workspaces_dir)), name="workspaces")
-
 # Global Sentinel Context
 CONFIG_PATH = Path("config.yaml")
 config = SentinelConfig.load(CONFIG_PATH)
+
+workspaces_dir = Path(config.storage.workspaces_dir).resolve()
+workspaces_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/workspaces", StaticFiles(directory=str(workspaces_dir)), name="workspaces")
+
 db = SentinelDB(config.storage.db_path)
 state_machine = StateMachine(db)
 verification_gate = VerificationGate(db)
@@ -99,6 +100,7 @@ pdp = PolicyDecisionPoint(
     tool_registry,
     agent_registry,
     allowed_domains=config.network_policy.allowed_domains,
+    allowed_workspaces_dir=workspaces_dir,
 )
 broker = ExecutionBroker(pdp, tool_registry, side_effects)
 
@@ -135,7 +137,7 @@ def init_standard_agents():
             description="Analyzes CSV datasets, computes aggregations, and synthesizes analytical reports.",
             author="Sentinel Biological Systems",
             capabilities=["data:csv", "data:stats", "data:report", "skill:compose"],
-            allowed_organs=["python_sandbox_run", "csv_analyze_and_report", "file_transform", "execute_skill", "skill_*", "broker_http_get"],
+            allowed_organs=["python_sandbox_run", "csv_analyze_and_report", "file_transform", "execute_skill", "skill_*", "broker_http_get", "system_filesystem_inspect"],
         ),
         AgentManifest(
             agent_id="code_engineer",
@@ -144,7 +146,7 @@ def init_standard_agents():
             description="Synthesizes Python scripts, modules, algorithms, and executes sandboxed code.",
             author="Sentinel Biological Systems",
             capabilities=["code:python", "code:execution", "code:testing", "skill:compose"],
-            allowed_organs=["python_sandbox_run", "windows_command", "execute_skill", "skill_*", "broker_http_get"],
+            allowed_organs=["python_sandbox_run", "windows_command", "execute_skill", "skill_*", "broker_http_get", "system_filesystem_inspect"],
         ),
         AgentManifest(
             agent_id="systems_reporter",
@@ -153,7 +155,7 @@ def init_standard_agents():
             description="Synthesizes executive markdown reports and system health briefings.",
             author="Sentinel Biological Systems",
             capabilities=["analysis:markdown", "reporting:executive", "skill:compose"],
-            allowed_organs=["python_sandbox_run", "file_transform", "execute_skill", "skill_*", "broker_http_get"],
+            allowed_organs=["python_sandbox_run", "file_transform", "execute_skill", "skill_*", "broker_http_get", "system_filesystem_inspect"],
         ),
     ]
 
@@ -166,11 +168,11 @@ def init_standard_agents():
             except Exception:
                 pass
         else:
-            # Sync allowed_organs to include execute_skill, skill_*, and broker_http_get
+            # Sync allowed_organs to include execute_skill, skill_*, broker_http_get, and system_filesystem_inspect
             curr_manifest = json.loads(existing["manifest_json"])
             organs = curr_manifest.get("allowed_organs", [])
             updated = False
-            for req_org in ["execute_skill", "skill_*", "broker_http_get"]:
+            for req_org in ["execute_skill", "skill_*", "broker_http_get", "system_filesystem_inspect"]:
                 if req_org not in organs:
                     organs.append(req_org)
                     updated = True
@@ -686,7 +688,53 @@ def execute_domain_step(
                 "You are Sentinel's Autonomous Systems Reporter. Provide a clear, structured, comprehensive Markdown report solving the user's task. "
                 "Use headings, bullet points, and data tables where helpful."
             )
-            prompt_rep = f"Task: {goal}{pred_context}"
+
+            # Ground-truth sensory perception injection for filesystem, drives, folders, games, and storage
+            sensory_context = ""
+            fs_keywords = ["folder", "disk", "drive", "system", "storage", "largest", "game", "games", "space", "file", "directory", "size", "bytes", "gb", "hardware"]
+            if any(k in lower_goal for k in fs_keywords):
+                telemetry = {}
+                try:
+                    drives_info = run_tool_fenced("system_filesystem_inspect", {"mode": "list_drives"})
+                    if drives_info.get("success"):
+                        telemetry["drives"] = drives_info.get("drives")
+                except Exception as e:
+                    logger.warning("Sensory drive inspection failed: %s", e)
+
+                if any(k in lower_goal for k in ["largest", "big", "size", "heavy", "folder", "directory"]):
+                    try:
+                        top_f = run_tool_fenced("system_filesystem_inspect", {"mode": "largest_folders", "path": "all", "limit": 10})
+                        if top_f.get("success"):
+                            telemetry["largest_folders"] = top_f.get("top_folders")
+                    except Exception as e:
+                        logger.warning("Sensory largest folders inspection failed: %s", e)
+
+                if any(k in lower_goal for k in ["game", "games", "find", "search", "where", "locate"]):
+                    pat = "*games*" if "game" in lower_goal else "*"
+                    for w in lower_goal.split():
+                        clean_w = w.strip("?.,!\"'").lower()
+                        if clean_w in ["game", "games"]:
+                            pat = "*game*"
+                            break
+                    try:
+                        search_res = run_tool_fenced("system_filesystem_inspect", {"mode": "find", "path": "all", "pattern": pat, "limit": 15})
+                        if search_res.get("success"):
+                            telemetry["search_matches"] = search_res.get("matches")
+                    except Exception as e:
+                        logger.warning("Sensory file search failed: %s", e)
+
+                if telemetry:
+                    sensory_context = (
+                        "\n\n[LIVE GROUND-TRUTH SENSORY TELEMETRY]:\n"
+                        "Sentinel has measured live, empirical filesystem & drive data directly from this host:\n"
+                        f"```json\n{json.dumps(telemetry, indent=2)}\n```\n"
+                        "IMPORTANT INSTRUCTION FOR REPORT SYNTHESIS:\n"
+                        "- You have real read-only sensory access to the system. Never claim you lack access to the file system or local storage.\n"
+                        "- Present the exact drive paths, folder names, and sizes (GB / MB) reported in the telemetry above.\n"
+                        "- Synthesize a clean, professional executive report highlighting the top folders/drives found."
+                    )
+
+            prompt_rep = f"Task: {goal}{pred_context}{sensory_context}"
             if anti_patterns:
                 prompt_rep += f"\n[PREVIOUS DEFECT]:\n{anti_patterns}\nAddress the defect."
             report_text = gw.generate(prompt=prompt_rep, system=sys_inst, model=selected_model)

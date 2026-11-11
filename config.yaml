@@ -21,7 +21,7 @@ isolation:
 storage:
   db_path: "data/sentinel_core.db"
   skills_dir: "skills"
-  workspaces_dir: "workspaces"
+  workspaces_dir: "G:/Sentinel_Workspace"
 
 policy:
   allow_irreversible: false
