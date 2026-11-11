@@ -10,25 +10,59 @@ export function ViewportModal({ artifactName, onClose }) {
   const [copied, setCopied] = useState(false);
   const [csvFilter, setCsvFilter] = useState('');
   const [isWireframe, setIsWireframe] = useState(false);
+  const [autoRotate, setAutoRotate] = useState(true);
+  const [viewMode, setViewMode] = useState('formatted'); // 'formatted' | 'raw'
+  const [meshStats, setMeshStats] = useState({ vertices: 0, faces: 0, dimensions: '' });
+  const [fileSizeBytes, setFileSizeBytes] = useState(0);
 
   const canvasRef = useRef(null);
   const threeCleanupRef = useRef(null);
+  const cameraRef = useRef(null);
+  const controlsRef = useRef(null);
+  const meshRef = useRef(null);
 
-  const fileType = artifactName ? artifactName.split('.').pop().toLowerCase() : '';
-  const fileUrl = `/workspaces/${artifactName}`;
+  const cleanName = artifactName ? artifactName.split(/[/\\]/).pop() : '';
+  const fileType = cleanName ? cleanName.split('.').pop().toLowerCase() : '';
+  const fileUrl = `/workspaces/${cleanName}`;
 
   useEffect(() => {
-    if (!artifactName) return;
+    if (!cleanName) return;
     setLoading(true);
     setError(null);
+    setContent('');
+    setMeshStats({ vertices: 0, faces: 0, dimensions: '' });
 
     if (fileType === 'obj') {
-      setLoading(false);
-      initThreeJS(fileUrl);
-    } else {
-      api.fetchArtifact(fileUrl)
+      // 3D Model: fetch text to calculate size/lines and initialize ThreeJS
+      fetch(fileUrl)
+        .then((res) => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}: Artifact '${cleanName}' not found on server`);
+          const cl = res.headers.get('content-length');
+          if (cl) setFileSizeBytes(parseInt(cl, 10));
+          return res.text();
+        })
         .then((text) => {
           setContent(text);
+          setFileSizeBytes(text.length);
+          setLoading(false);
+          startThreeJS(fileUrl);
+        })
+        .catch((err) => {
+          setError(err.message || 'Failed to load 3D artifact');
+          setLoading(false);
+        });
+    } else {
+      // CSV, Python, Markdown, Text
+      fetch(fileUrl)
+        .then((res) => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}: Artifact '${cleanName}' not found on server`);
+          const cl = res.headers.get('content-length');
+          if (cl) setFileSizeBytes(parseInt(cl, 10));
+          return res.text();
+        })
+        .then((text) => {
+          setContent(text);
+          setFileSizeBytes(text.length);
           setLoading(false);
         })
         .catch((err) => {
@@ -38,46 +72,64 @@ export function ViewportModal({ artifactName, onClose }) {
     }
 
     return () => {
-      if (threeCleanupRef.current) threeCleanupRef.current();
+      if (threeCleanupRef.current) {
+        threeCleanupRef.current();
+        threeCleanupRef.current = null;
+      }
     };
-  }, [artifactName]);
+  }, [cleanName]);
 
-  const initThreeJS = async (url) => {
+  // Robust Three.js initialization with mount-wait loop
+  const startThreeJS = (url) => {
+    let attempts = 0;
+    const tryInit = () => {
+      attempts++;
+      if (canvasRef.current && canvasRef.current.clientWidth > 0) {
+        initThreeJS(canvasRef.current, url);
+      } else if (attempts < 20) {
+        requestAnimationFrame(tryInit);
+      }
+    };
+    requestAnimationFrame(tryInit);
+  };
+
+  const initThreeJS = async (container, url) => {
     try {
+      if (threeCleanupRef.current) threeCleanupRef.current();
+
       const THREE = await import('https://esm.sh/three@0.160.0');
       const { OBJLoader } = await import('https://esm.sh/three@0.160.0/examples/jsm/loaders/OBJLoader.js');
       const { OrbitControls } = await import('https://esm.sh/three@0.160.0/examples/jsm/controls/OrbitControls.js');
 
-      if (!canvasRef.current) return;
-
-      const container = canvasRef.current;
-      const width = container.clientWidth;
-      const height = container.clientHeight;
+      const width = container.clientWidth || 800;
+      const height = container.clientHeight || 520;
 
       const scene = new THREE.Scene();
       scene.background = new THREE.Color(0x0a0e17);
 
       const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 1000);
       camera.position.set(0, 3, 7);
+      cameraRef.current = camera;
 
       const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
       renderer.setSize(width, height);
-      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       container.innerHTML = '';
       container.appendChild(renderer.domElement);
 
       const controls = new OrbitControls(camera, renderer.domElement);
       controls.enableDamping = true;
       controls.dampingFactor = 0.05;
+      controlsRef.current = controls;
 
-      const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.9);
       scene.add(ambientLight);
 
-      const dirLight1 = new THREE.DirectionalLight(0x38bdf8, 1.2);
+      const dirLight1 = new THREE.DirectionalLight(0x38bdf8, 1.4);
       dirLight1.position.set(5, 10, 7);
       scene.add(dirLight1);
 
-      const dirLight2 = new THREE.DirectionalLight(0xa855f7, 0.8);
+      const dirLight2 = new THREE.DirectionalLight(0xa855f7, 0.9);
       dirLight2.position.set(-5, -5, -5);
       scene.add(dirLight2);
 
@@ -87,52 +139,122 @@ export function ViewportModal({ artifactName, onClose }) {
 
       let currentMesh = null;
       const loader = new OBJLoader();
-      loader.load(url, (obj) => {
-        currentMesh = obj;
-        const box = new THREE.Box3().setFromObject(obj);
-        const center = box.getCenter(new THREE.Vector3());
-        const size = box.getSize(new THREE.Vector3());
 
-        const maxDim = Math.max(size.x, size.y, size.z);
-        const scale = 3.5 / (maxDim || 1);
-        obj.scale.set(scale, scale, scale);
+      loader.load(
+        url,
+        (obj) => {
+          currentMesh = obj;
+          meshRef.current = obj;
 
-        obj.position.x -= center.x * scale;
-        obj.position.y -= center.y * scale;
-        obj.position.z -= center.z * scale;
+          let vCount = 0;
+          let fCount = 0;
 
-        obj.traverse((child) => {
-          if (child.isMesh) {
-            child.material = new THREE.MeshStandardMaterial({
-              color: 0x93c5fd,
-              metalness: 0.2,
-              roughness: 0.4,
-              wireframe: isWireframe,
-            });
-          }
-        });
+          obj.traverse((child) => {
+            if (child.isMesh && child.geometry) {
+              const g = child.geometry;
+              if (g.attributes.position) {
+                vCount += g.attributes.position.count;
+              }
+              if (g.index) {
+                fCount += g.index.count / 3;
+              } else if (g.attributes.position) {
+                fCount += g.attributes.position.count / 3;
+              }
+              child.material = new THREE.MeshStandardMaterial({
+                color: 0x93c5fd,
+                metalness: 0.3,
+                roughness: 0.35,
+                wireframe: isWireframe,
+              });
+            }
+          });
 
-        scene.add(obj);
-      });
+          // Compute Bounding Box, Dimensions & Normalize Scale
+          const box = new THREE.Box3().setFromObject(obj);
+          const center = box.getCenter(new THREE.Vector3());
+          const size = box.getSize(new THREE.Vector3());
 
+          const maxDim = Math.max(size.x, size.y, size.z);
+          const scale = 3.6 / (maxDim || 1);
+          obj.scale.set(scale, scale, scale);
+
+          obj.position.x -= center.x * scale;
+          obj.position.y -= center.y * scale;
+          obj.position.z -= center.z * scale;
+
+          scene.add(obj);
+
+          setMeshStats({
+            vertices: vCount,
+            faces: Math.floor(fCount),
+            dimensions: `${size.x.toFixed(2)} × ${size.y.toFixed(2)} × ${size.z.toFixed(2)}`,
+          });
+        },
+        undefined,
+        (err) => {
+          console.error('OBJLoader failed', err);
+          setError(`3D Geometry parse error: ${err.message || 'Malformed Wavefront OBJ'}`);
+        }
+      );
+
+      // Animation Loop
       let animationFrameId;
       const animate = () => {
         animationFrameId = requestAnimationFrame(animate);
-        if (currentMesh) {
-          currentMesh.rotation.y += 0.003;
+        if (currentMesh && autoRotate) {
+          currentMesh.rotation.y += 0.004;
         }
         controls.update();
         renderer.render(scene, camera);
       };
       animate();
 
+      // Responsive Resize Observer
+      const resizeObserver = new ResizeObserver((entries) => {
+        for (const entry of entries) {
+          const w = entry.contentRect.width;
+          const h = entry.contentRect.height;
+          if (w > 0 && h > 0) {
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+            renderer.setSize(w, h);
+          }
+        }
+      });
+      resizeObserver.observe(container);
+
       threeCleanupRef.current = () => {
         cancelAnimationFrame(animationFrameId);
+        resizeObserver.disconnect();
+        controls.dispose();
         renderer.dispose();
+        if (renderer.domElement && renderer.domElement.parentNode) {
+          renderer.domElement.parentNode.removeChild(renderer.domElement);
+        }
       };
     } catch (e) {
       console.error('Three.js failed to initialize', e);
       setError('Three.js 3D viewport initialization failed: ' + e.message);
+    }
+  };
+
+  const toggleWireframe = () => {
+    const nextState = !isWireframe;
+    setIsWireframe(nextState);
+    if (meshRef.current) {
+      meshRef.current.traverse((child) => {
+        if (child.isMesh && child.material) {
+          child.material.wireframe = nextState;
+        }
+      });
+    }
+  };
+
+  const resetCamera = () => {
+    if (cameraRef.current && controlsRef.current) {
+      cameraRef.current.position.set(0, 3, 7);
+      controlsRef.current.target.set(0, 0, 0);
+      controlsRef.current.update();
     }
   };
 
@@ -142,96 +264,326 @@ export function ViewportModal({ artifactName, onClose }) {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  // Robust RFC 4180 CSV Parser (handles quoted strings, commas, newlines)
   const parseCSV = (csvText) => {
-    const lines = csvText.trim().split('\n');
+    if (!csvText || !csvText.trim()) return { headers: [], rows: [] };
+    const lines = csvText.trim().split(/\r?\n/).filter((l) => l.trim().length > 0);
     if (lines.length === 0) return { headers: [], rows: [] };
-    const headers = lines[0].split(',').map((h) => h.trim().replace(/^"|"$/g, ''));
-    const rows = lines.slice(1).map((line) =>
-      line.split(',').map((col) => col.trim().replace(/^"|"$/g, ''))
-    );
+
+    const parseLine = (line) => {
+      const result = [];
+      let cur = '';
+      let inQuotes = false;
+      for (let i = 0; i < line.length; i++) {
+        const c = line[i];
+        if (c === '"') {
+          if (inQuotes && line[i + 1] === '"') {
+            cur += '"';
+            i++;
+          } else {
+            inQuotes = !inQuotes;
+          }
+        } else if (c === ',' && !inQuotes) {
+          result.push(cur.trim());
+          cur = '';
+        } else {
+          cur += c;
+        }
+      }
+      result.push(cur.trim());
+      return result;
+    };
+
+    const headers = parseLine(lines[0]);
+    const rows = lines.slice(1).map(parseLine);
     return { headers, rows };
   };
 
+  // High-Quality Client-Side Markdown Formatter with Table, Code, and Section Support
+  const renderFormattedMarkdown = (text) => {
+    if (!text) return null;
+    const lines = text.split(/\r?\n/);
+    const elements = [];
+    let tableRows = [];
+    let inTable = false;
+    let inCode = false;
+    let codeLines = [];
+    let codeLang = '';
+
+    const flushTable = (key) => {
+      if (tableRows.length === 0) return;
+      const headers = tableRows[0];
+      const dataRows = tableRows.slice(1);
+      elements.push(html`
+        <div key=${key} className="csv-table-wrapper" style=${{ margin: '14px 0' }}>
+          <table className="csv-spatial-table">
+            <thead>
+              <tr>
+                ${headers.map((h, hi) => html`<th key=${hi}>${h.trim()}</th>`)}
+              </tr>
+            </thead>
+            <tbody>
+              ${dataRows.map((r, ri) => html`
+                <tr key=${ri}>
+                  ${r.map((col, ci) => html`<td key=${ci}>${col.trim()}</td>`)}
+                </tr>
+              `)}
+            </tbody>
+          </table>
+        </div>
+      `);
+      tableRows = [];
+      inTable = false;
+    };
+
+    const flushCode = (key) => {
+      if (codeLines.length === 0) return;
+      const codeText = codeLines.join('\n');
+      elements.push(html`
+        <div key=${key} className="code-viewport-container" style=${{ margin: '14px 0' }}>
+          <div className="code-toolbar">
+            <span>${codeLang ? codeLang.toUpperCase() : 'CODE'}</span>
+            <button
+              className="btn btn-secondary"
+              style=${{ padding: '2px 8px', fontSize: '10px' }}
+              onClick=${() => navigator.clipboard.writeText(codeText)}
+            >
+              Copy
+            </button>
+          </div>
+          <pre className="code-pre" style=${{ maxHeight: '350px' }}><code>${codeText}</code></pre>
+        </div>
+      `);
+      codeLines = [];
+      inCode = false;
+      codeLang = '';
+    };
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      // Code Block Boundary
+      if (line.trim().startsWith('```')) {
+        if (inCode) {
+          flushCode(`code-${i}`);
+        } else {
+          if (inTable) flushTable(`table-${i}`);
+          inCode = true;
+          codeLang = line.trim().replace(/^```/, '').trim();
+        }
+        continue;
+      }
+
+      if (inCode) {
+        codeLines.push(line);
+        continue;
+      }
+
+      // Markdown Table Row
+      if (line.trim().startsWith('|') && line.trim().endsWith('|')) {
+        const cells = line.split('|').slice(1, -1);
+        // Skip separator row like |---|---|
+        if (cells.every((c) => /^[\s-:]+$/.test(c))) {
+          continue;
+        }
+        inTable = true;
+        tableRows.push(cells);
+        continue;
+      } else if (inTable) {
+        flushTable(`table-${i}`);
+      }
+
+      // Headers
+      if (line.startsWith('# ')) {
+        elements.push(html`<h1 key=${i} style=${{ color: '#fff', fontSize: '20px', margin: '18px 0 10px', borderBottom: '1px solid var(--border-glass)', paddingBottom: '6px' }}>${line.replace('# ', '')}</h1>`);
+      } else if (line.startsWith('## ')) {
+        elements.push(html`<h2 key=${i} style=${{ color: 'var(--accent-cyan)', fontSize: '16px', margin: '16px 0 8px' }}>${line.replace('## ', '')}</h2>`);
+      } else if (line.startsWith('### ')) {
+        elements.push(html`<h3 key=${i} style=${{ color: '#cbd5e1', fontSize: '14px', margin: '12px 0 6px' }}>${line.replace('### ', '')}</h3>`);
+      } else if (line.startsWith('> ')) {
+        elements.push(html`<blockquote key=${i} style=${{ borderLeft: '3px solid var(--accent-primary)', margin: '10px 0', padding: '6px 12px', background: 'rgba(59, 130, 246, 0.08)', color: '#93c5fd', borderRadius: '0 4px 4px 0' }}>${line.replace('> ', '')}</blockquote>`);
+      } else if (line.startsWith('- ') || line.startsWith('* ')) {
+        elements.push(html`<li key=${i} style=${{ marginLeft: '20px', color: '#e2e8f0', margin: '3px 0' }}>${line.replace(/^[-*]\s+/, '')}</li>`);
+      } else if (line.trim() === '---') {
+        elements.push(html`<hr key=${i} style=${{ border: 'none', borderTop: '1px solid var(--border-glass)', margin: '16px 0' }} />`);
+      } else if (line.trim()) {
+        elements.push(html`<p key=${i} style=${{ margin: '6px 0', color: '#e2e8f0', lineHeight: '1.6' }}>${line}</p>`);
+      }
+    }
+
+    if (inTable) flushTable('table-end');
+    if (inCode) flushCode('code-end');
+
+    return elements;
+  };
+
+  const formatFileSize = (bytes) => {
+    if (!bytes) return '0 B';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  };
+
+  const totalLines = content ? content.split(/\r?\n/).length : 0;
+
   return html`
     <div className="modal-overlay" onClick=${onClose}>
-      <div className="modal-content" onClick=${(e) => e.stopPropagation()}>
+      <div className="modal-content" style=${{ maxWidth: '1280px', width: '92vw', height: '88vh' }} onClick=${(e) => e.stopPropagation()}>
+        <!-- Modal Header with Full Data Telemetry -->
         <div className="modal-header">
-          <div style=${{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <div style=${{ display: 'flex', alignItems: 'center', gap: '12px' }}>
             <${Icon}
               name=${fileType === 'obj' ? 'box' : fileType === 'csv' ? 'activity' : fileType === 'py' ? 'code' : 'fileText'}
-              size=${18}
+              size=${20}
             />
-            <span style=${{ fontSize: '15px', fontWeight: 600, color: '#fff' }}>${artifactName}</span>
-            <span className="pill pending">${fileType.toUpperCase()}</span>
+            <div>
+              <div style=${{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style=${{ fontSize: '15px', fontWeight: 600, color: '#fff' }}>${cleanName}</span>
+                <span className="pill pending" style=${{ fontSize: '10px', textTransform: 'uppercase' }}>
+                  ${fileType === 'obj' ? '3D MESH' : fileType === 'csv' ? 'CSV DATASET' : fileType === 'py' ? 'PYTHON SCRIPT' : 'DOCUMENT'}
+                </span>
+              </div>
+              <div style=${{ fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>
+                Size: <strong>${formatFileSize(fileSizeBytes)}</strong>
+                ${totalLines > 0 ? html` · Lines: <strong>${totalLines.toLocaleString()}</strong>` : ''}
+                ${meshStats.vertices > 0 ? html` · Vertices: <strong>${meshStats.vertices.toLocaleString()}</strong> · Faces: <strong>${meshStats.faces.toLocaleString()}</strong>` : ''}
+              </div>
+            </div>
           </div>
 
-          <div style=${{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div style=${{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <!-- View Mode Switcher for CSV & Markdown -->
+            ${(fileType === 'csv' || fileType === 'md' || fileType === 'txt') && !loading && !error && html`
+              <div style=${{ display: 'flex', background: 'rgba(0,0,0,0.4)', borderRadius: '6px', padding: '2px', border: '1px solid var(--border-glass)' }}>
+                <button
+                  className=${`btn ${viewMode === 'formatted' ? 'btn-primary' : 'btn-secondary'}`}
+                  style=${{ padding: '3px 10px', fontSize: '11px', borderRadius: '4px' }}
+                  onClick=${() => setViewMode('formatted')}
+                >
+                  ${fileType === 'csv' ? 'Table Grid' : 'Formatted'}
+                </button>
+                <button
+                  className=${`btn ${viewMode === 'raw' ? 'btn-primary' : 'btn-secondary'}`}
+                  style=${{ padding: '3px 10px', fontSize: '11px', borderRadius: '4px' }}
+                  onClick=${() => setViewMode('raw')}
+                >
+                  Raw Source
+                </button>
+              </div>
+            `}
+
+            <button className="btn btn-secondary" onClick=${copyToClipboard} title="Copy entire content">
+              <${Icon} name="copy" size=${13} />
+              <span>${copied ? 'Copied!' : 'Copy'}</span>
+            </button>
+
             <a className="btn btn-secondary" href=${fileUrl} download title="Download raw artifact">
               <${Icon} name="download" size=${13} />
               <span>Download</span>
             </a>
-            <button className="btn-icon" onClick=${onClose}>
+
+            <button className="btn-icon" onClick=${onClose} title="Close Viewport">
               <${Icon} name="close" size=${16} />
             </button>
           </div>
         </div>
 
-        <div className="modal-body" style=${{ padding: '16px' }}>
+        <!-- Modal Body: Flexible Full-Height Viewport -->
+        <div className="modal-body" style=${{ padding: '16px', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'auto' }}>
           ${loading && html`
-            <div className="empty-state">
+            <div className="empty-state" style=${{ flex: 1 }}>
               <div className="empty-state-icon" style=${{ animation: 'spin 1.5s infinite linear' }}>
                 <${Icon} name="refresh" size=${32} />
               </div>
-              <div className="empty-state-text">Loading artifact viewport...</div>
+              <div className="empty-state-text">Loading artifact viewport from disk...</div>
             </div>
           `}
 
           ${error && html`
-            <div className="empty-state">
-              <div className="empty-state-text" style=${{ color: '#f43f5e' }}>${error}</div>
+            <div className="empty-state" style=${{ flex: 1 }}>
+              <div className="empty-state-text" style=${{ color: '#f43f5e', fontSize: '14px', maxWidth: '600px' }}>
+                <div style=${{ fontWeight: 600, marginBottom: '6px' }}>Artifact Load Error</div>
+                <div>${error}</div>
+                <div style=${{ fontSize: '11px', color: '#94a3b8', marginTop: '10px' }}>Target URL: <code>${fileUrl}</code></div>
+              </div>
             </div>
           `}
 
-          <!-- 3D OBJ Viewport -->
-          ${fileType === 'obj' && html`
-            <div className="viewport-3d-container">
+          <!-- 1. 3D OBJ Viewport -->
+          ${fileType === 'obj' && !loading && !error && html`
+            <div className="viewport-3d-container" style=${{ flex: 1, minHeight: '520px' }}>
               <div ref=${canvasRef} className="viewport-3d-canvas"></div>
-              <div className="viewport-3d-hint">Left click to orbit · Scroll to zoom · Right click to pan</div>
+              
+              <div className="viewport-3d-controls">
+                <button
+                  className=${isWireframe ? 'active' : ''}
+                  onClick=${toggleWireframe}
+                  title="Toggle wireframe rendering mode"
+                >
+                  ${isWireframe ? 'Solid' : 'Wireframe'}
+                </button>
+                <button
+                  className=${autoRotate ? 'active' : ''}
+                  onClick=${() => setAutoRotate(!autoRotate)}
+                  title="Toggle continuous turntable rotation"
+                >
+                  ${autoRotate ? 'Pause Rotation' : 'Auto Rotate'}
+                </button>
+                <button onClick=${resetCamera} title="Reset camera position">
+                  Reset View
+                </button>
+              </div>
+
+              <div className="viewport-3d-hint">
+                Left click to orbit · Scroll to zoom · Right click to pan
+                ${meshStats.dimensions ? ` · Bounding Box: ${meshStats.dimensions}` : ''}
+              </div>
             </div>
           `}
 
-          <!-- CSV Table Viewport -->
+          <!-- 2. CSV Table Viewport -->
           ${fileType === 'csv' && !loading && !error && (() => {
+            if (viewMode === 'raw') {
+              return html`
+                <div className="code-viewport-container" style=${{ flex: 1, minHeight: '450px' }}>
+                  <pre className="code-pre" style=${{ maxHeight: 'none', height: '100%' }}><code>${content}</code></pre>
+                </div>
+              `;
+            }
+
             const { headers, rows } = parseCSV(content);
             const filteredRows = rows.filter((r) =>
-              r.some((c) => c.toLowerCase().includes(csvFilter.toLowerCase()))
+              r.some((c) => c && c.toLowerCase().includes(csvFilter.toLowerCase()))
             );
 
             return html`
-              <div className="csv-viewport-container">
-                <div className="csv-toolbar">
-                  <span style=${{ fontSize: '12px', color: '#94a3b8' }}>
-                    Total: <strong>${rows.length}</strong> rows · Filtered: <strong>${filteredRows.length}</strong>
-                  </span>
+              <div className="csv-viewport-container" style=${{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+                <div className="csv-toolbar" style=${{ marginBottom: '10px' }}>
+                  <div style=${{ fontSize: '12px', color: '#94a3b8' }}>
+                    Total: <strong style=${{ color: '#fff' }}>${rows.length}</strong> rows × <strong style=${{ color: '#fff' }}>${headers.length}</strong> columns
+                    ${csvFilter ? html` · Matching filter: <strong style=${{ color: 'var(--accent-cyan)' }}>${filteredRows.length}</strong>` : ''}
+                  </div>
                   <input
                     type="text"
                     className="csv-search-input"
-                    placeholder="Search table rows..."
+                    placeholder="Search all cells..."
                     value=${csvFilter}
                     onChange=${(e) => setCsvFilter(e.target.value)}
                   />
                 </div>
 
-                <div className="csv-table-wrapper">
+                <div className="csv-table-wrapper" style=${{ flex: 1, overflow: 'auto', maxHeight: 'calc(88vh - 180px)' }}>
                   <table className="csv-spatial-table">
                     <thead>
                       <tr>
+                        <th style=${{ width: '40px', textAlign: 'center', color: '#64748b' }}>#</th>
                         ${headers.map((h, i) => html`<th key=${i}>${h}</th>`)}
                       </tr>
                     </thead>
                     <tbody>
                       ${filteredRows.map((row, ri) => html`
                         <tr key=${ri}>
+                          <td style=${{ textAlign: 'center', color: '#64748b', fontSize: '10px' }}>${ri + 1}</td>
                           ${row.map((col, ci) => html`<td key=${ci}>${col}</td>`)}
                         </tr>
                       `)}
@@ -242,29 +594,33 @@ export function ViewportModal({ artifactName, onClose }) {
             `;
           })()}
 
-          <!-- Python & Code Viewport -->
+          <!-- 3. Python & JSON Code Viewport -->
           ${(fileType === 'py' || fileType === 'json') && !loading && !error && html`
-            <div className="code-viewport-container">
+            <div className="code-viewport-container" style=${{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
               <div className="code-toolbar">
-                <span>${fileType.toUpperCase()} Source</span>
-                <button
-                  className="btn btn-secondary"
-                  style=${{ padding: '3px 8px', fontSize: '11px' }}
-                  onClick=${copyToClipboard}
-                >
-                  ${copied ? 'Copied!' : 'Copy Code'}
-                </button>
+                <span>${fileType.toUpperCase()} SOURCE CODE (${totalLines.toLocaleString()} lines)</span>
+                <span style=${{ color: '#94a3b8' }}>UTF-8 · Python Standard Library</span>
               </div>
-              <pre className="code-pre"><code>${content}</code></pre>
+              <pre className="code-pre" style=${{ flex: 1, maxHeight: 'calc(88vh - 180px)', overflow: 'auto' }}><code>${content}</code></pre>
             </div>
           `}
 
-          <!-- Markdown Viewport -->
-          ${(fileType === 'md' || fileType === 'txt') && !loading && !error && html`
-            <div className="markdown-viewport-container">
-              <pre style=${{ whiteSpace: 'pre-wrap', fontFamily: 'inherit', margin: 0 }}>${content}</pre>
-            </div>
-          `}
+          <!-- 4. Markdown Viewport -->
+          ${(fileType === 'md' || fileType === 'txt') && !loading && !error && (() => {
+            if (viewMode === 'raw') {
+              return html`
+                <div className="code-viewport-container" style=${{ flex: 1, minHeight: '450px' }}>
+                  <pre className="code-pre" style=${{ maxHeight: 'none', height: '100%' }}><code>${content}</code></pre>
+                </div>
+              `;
+            }
+
+            return html`
+              <div className="markdown-viewport-container" style=${{ flex: 1, overflowY: 'auto', maxHeight: 'calc(88vh - 180px)', paddingRight: '8px' }}>
+                ${renderFormattedMarkdown(content)}
+              </div>
+            `;
+          })()}
         </div>
       </div>
     </div>

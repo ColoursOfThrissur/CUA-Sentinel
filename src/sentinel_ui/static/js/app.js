@@ -77,10 +77,14 @@ export function App() {
         const [tel, tsk] = await Promise.all([api.getTelemetry(), api.getTasks()]);
         setTelemetry(tel);
         setTasks(tsk);
+        if (selectedDagRun && (selectedDagRun.state === 'Running' || selectedDagRun.state === 'Pending')) {
+          const updatedDag = await api.getDagStatus(selectedDagRun.id);
+          setSelectedDagRun(updatedDag);
+        }
       } catch (e) {}
-    }, 3000);
+    }, 2500);
     return () => clearInterval(interval);
-  }, []);
+  }, [selectedDagRun]);
 
   // Select DAG Run & fetch full steps
   const handleSelectRun = async (run) => {
@@ -163,6 +167,25 @@ export function App() {
     }
   };
 
+  // Launch a Custom Composed Multi-Agent Pipeline
+  const handleDispatchCustomPipeline = async ({ name, description, steps }) => {
+    setIsDispatching(true);
+    try {
+      const runRes = await api.dispatchDag({
+        name,
+        description,
+        steps,
+      });
+      setSelectedDagRun(runRes);
+      setActiveTab('dag');
+      await loadAll();
+    } catch (err) {
+      alert('Custom Pipeline Dispatch Failed: ' + err.message);
+    } finally {
+      setIsDispatching(false);
+    }
+  };
+
   // Cancel Running Task
   const handleCancelTask = async (taskId) => {
     try {
@@ -223,6 +246,7 @@ export function App() {
             selectedRun=${selectedDagRun}
             onSelectRun=${handleSelectRun}
             onRunTemplate=${handleRunTemplate}
+            onDispatchCustomPipeline=${handleDispatchCustomPipeline}
             onCancelDag=${handleCancelDag}
             onOpenViewport=${setActiveViewportArtifact}
             isDispatching=${isDispatching}

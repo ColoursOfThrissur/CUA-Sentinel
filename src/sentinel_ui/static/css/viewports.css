@@ -150,17 +150,16 @@
   margin: 0;
   padding: 18px;
   overflow: auto;
-  max-height: 520px;
   font-family: var(--font-mono);
   font-size: 12.5px;
   line-height: 1.6;
   color: #e2e8f0;
+  background: transparent;
 }
 
 /* Markdown Reader Viewport */
 .markdown-viewport-container {
-  padding: 10px 6px;
-  max-height: 540px;
+  padding: 10px 12px;
   overflow-y: auto;
   color: #e2e8f0;
   font-size: 14px;
@@ -169,11 +168,28 @@
 
 .markdown-viewport-container h1,
 .markdown-viewport-container h2,
-.markdown-viewport-container h3 {
+.markdown-viewport-container h3,
+.markdown-viewport-container h4 {
   color: #ffffff;
-  margin-top: 20px;
-  margin-bottom: 10px;
+  margin-top: 18px;
+  margin-bottom: 8px;
   font-weight: 600;
+}
+
+.markdown-viewport-container h1 {
+  font-size: 20px;
+  border-bottom: 1px solid var(--border-glass);
+  padding-bottom: 8px;
+}
+
+.markdown-viewport-container h2 {
+  font-size: 16px;
+  color: var(--accent-cyan);
+}
+
+.markdown-viewport-container h3 {
+  font-size: 14px;
+  color: #cbd5e1;
 }
 
 .markdown-viewport-container p {
@@ -193,10 +209,19 @@
 .markdown-viewport-container code {
   font-family: var(--font-mono);
   font-size: 12px;
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.08);
   padding: 2px 6px;
   border-radius: 4px;
   color: #93c5fd;
+}
+
+.markdown-viewport-container blockquote {
+  border-left: 3px solid var(--accent-primary);
+  margin: 12px 0;
+  padding: 8px 14px;
+  background: rgba(59, 130, 246, 0.08);
+  color: #93c5fd;
+  border-radius: 0 4px 4px 0;
 }
 
 /* DAG Canvas Visualizer */

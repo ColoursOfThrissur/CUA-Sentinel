@@ -17,7 +17,7 @@ if str(src_dir) not in sys.path:
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import psutil
@@ -47,6 +47,7 @@ from sentinel_broker.organs.blender import register_blender_organs
 from sentinel_broker.organs.blender_prompts import synthesize_blender_script
 from sentinel_broker.organs.data_organ import register_data_organs
 from sentinel_broker.organs.web_organ import register_web_organs
+from sentinel_broker.organs.desktop_organ import register_desktop_organs
 from sentinel_runner.appcontainer_host import AppContainerHost
 from sentinel_core.llm_gateway import LLMGateway
 from sentinel_core.preflight_linter import PreFlightLinter
@@ -73,7 +74,56 @@ config = SentinelConfig.load(CONFIG_PATH)
 
 workspaces_dir = Path(config.storage.workspaces_dir).resolve()
 workspaces_dir.mkdir(parents=True, exist_ok=True)
-app.mount("/workspaces", StaticFiles(directory=str(workspaces_dir)), name="workspaces")
+repo_workspaces_dir = (Path(__file__).parent.parent.parent / "workspaces").resolve()
+repo_workspaces_dir.mkdir(parents=True, exist_ok=True)
+
+
+def find_artifact_file(filename_or_path: str) -> Path | None:
+    """Finds an artifact file across the primary workspace directory and repository workspaces directory."""
+    if not filename_or_path:
+        return None
+    name = Path(filename_or_path).name
+
+    # 1. Check primary configured workspace dir
+    p1 = workspaces_dir / name
+    if p1.is_file():
+        return p1
+
+    # 2. Check repo workspaces directory
+    p2 = repo_workspaces_dir / name
+    if p2.is_file():
+        return p2
+
+    # 3. Direct path check if absolute or relative exists
+    try:
+        p3 = Path(filename_or_path).resolve()
+        if p3.is_file():
+            return p3
+    except Exception:
+        pass
+
+    return None
+
+
+@app.get("/workspaces/{filename:path}")
+def get_workspace_artifact(filename: str):
+    found = find_artifact_file(filename)
+    if not found or not found.is_file():
+        raise HTTPException(status_code=404, detail=f"Artifact '{filename}' not found")
+
+    ext = found.suffix.lower()
+    media_types = {
+        ".obj": "model/obj",
+        ".mtl": "text/plain",
+        ".csv": "text/csv; charset=utf-8",
+        ".json": "application/json; charset=utf-8",
+        ".md": "text/markdown; charset=utf-8",
+        ".py": "text/x-python; charset=utf-8",
+        ".txt": "text/plain; charset=utf-8",
+        ".html": "text/html; charset=utf-8",
+    }
+    media_type = media_types.get(ext, "application/octet-stream")
+    return FileResponse(path=str(found), media_type=media_type, filename=found.name)
 
 static_dir = (Path(__file__).parent / "static").resolve()
 static_dir.mkdir(parents=True, exist_ok=True)
@@ -95,6 +145,7 @@ register_web_organs(
     block_private_ips=config.network_policy.block_private_ips,
     ledger=side_effects,
 )
+register_desktop_organs(tool_registry, ledger=side_effects)
 skill_bank = SkillBank(db, config.storage.skills_dir, tool_registry=tool_registry)
 skill_bank.register_distilled_skills_into_broker(tool_registry)
 
@@ -355,8 +406,10 @@ def list_tasks():
     for r in rows:
         d = dict(r)
         tid = d["id"]
-        # Find matching artifact in workspaces_dir
+        # Find matching artifact in workspaces_dir or repo_workspaces_dir
         matches = list(workspaces_dir.glob(f"{tid}.*"))
+        if not matches and repo_workspaces_dir.exists():
+            matches = list(repo_workspaces_dir.glob(f"{tid}.*"))
         if matches:
             # Pick primary artifact, prioritizing .obj, .csv, .md, .py, .txt over .mtl/.tmp
             def art_priority(p: Path):
@@ -791,23 +844,37 @@ def dispatch_task(req: TaskDispatchRequest):
     selected_model = req.model or config.llm.model
     lower_goal = goal.lower()
 
-    if any(w in lower_goal for w in [
-        "3d", "blender", "model", "sword", "mug", "spaceship", "tree", "chair", "monkey", "mesh",
-        "build", "turret", "gatling", "cylinder", "cube", "sphere", "torus", "geometry", "sculpture",
-        "gun", "barrel", "mount", "bracket", "pillar", "shaft", "car", "robot", "cannon", "shield",
-        "armor", "helmet", "ring", "table", "lamp", "building", "castle", "plane", "rifle", "dagger",
-        "warhammer"
-    ]):
-        domain = "3d"
-    elif any(w in lower_goal for w in ["csv", "table", "dataset", "dataframe", "rows", "columns", "spreadsheet", "sales"]):
-        domain = "data"
-    elif any(w in lower_goal for w in ["code", "python script", "function", "class", "algorithm", "program", "script", "write code"]):
-        domain = "code"
-    else:
-        domain = "report"
-
-    # Determine Gate A Agent Identity
     effective_agent = req.agent_id
+    domain = None
+    if effective_agent and effective_agent != "auto":
+        ag_rec = agent_registry.get(effective_agent)
+        if ag_rec and ag_rec.manifest and ag_rec.manifest.capabilities:
+            cap = ag_rec.manifest.capabilities[0]
+            if "3d" in cap:
+                domain = "3d"
+            elif "data" in cap:
+                domain = "data"
+            elif "code" in cap:
+                domain = "code"
+            elif "report" in cap or "analysis" in cap:
+                domain = "report"
+
+    if not domain:
+        if any(w in lower_goal for w in [
+            "3d", "blender", "model", "sword", "mug", "spaceship", "tree", "chair", "monkey", "mesh",
+            "build", "turret", "gatling", "cylinder", "cube", "sphere", "torus", "geometry", "sculpture",
+            "gun", "barrel", "mount", "bracket", "pillar", "shaft", "car", "robot", "cannon", "shield",
+            "armor", "helmet", "ring", "table", "lamp", "building", "castle", "plane", "rifle", "dagger",
+            "warhammer"
+        ]):
+            domain = "3d"
+        elif any(w in lower_goal for w in ["csv", "table", "dataset", "dataframe", "rows", "columns", "spreadsheet", "sales"]):
+            domain = "data"
+        elif any(w in lower_goal for w in ["code", "python script", "function", "class", "algorithm", "program", "script", "write code"]):
+            domain = "code"
+        else:
+            domain = "report"
+
     if not effective_agent or effective_agent == "auto":
         if domain == "3d":
             effective_agent = "blender_artisan"
@@ -864,6 +931,17 @@ def get_dag_run(dag_id: str):
     dag = dag_orchestrator.get_dag(dag_id)
     if not dag:
         raise HTTPException(status_code=404, detail=f"DAG '{dag_id}' not found")
+    # Enrich steps with artifact metadata and URLs for frontend viewports
+    for step in dag.get("steps", []):
+        art_path = step.get("output_artifact")
+        if art_path:
+            found = find_artifact_file(art_path)
+            p = found or Path(art_path)
+            step["artifact_filename"] = p.name
+            step["artifact_url"] = f"/workspaces/{p.name}"
+            step["artifact_exists"] = p.is_file()
+            if p.is_file():
+                step["artifact_size"] = p.stat().st_size
     return dag
 
 
@@ -921,7 +999,7 @@ def dispatch_dag(req: DAGDispatchRequest):
                 logger.exception("DAG background execution encountered error: %s", e)
 
         threading.Thread(target=run_in_bg, daemon=True).start()
-        return {"success": True, "dag_id": dag_id}
+        return dag_orchestrator.get_dag_status(dag_id)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
