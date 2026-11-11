@@ -33,7 +33,9 @@ from sentinel_core.dag_orchestrator import (
     DAGStepDefinition,
     DAGState,
     DAGStepState,
+    format_predecessor_artifacts,
 )
+from sentinel_core.dag_planner import DAGPlanner
 from sentinel_adaptive.mistake_ledger import MistakeMemory
 from sentinel_adaptive.skill_bank import SkillBank, derive_semantic_slug
 from sentinel_broker.tool_registry import ToolRegistry
@@ -239,9 +241,16 @@ class ExecuteSkillRequest(BaseModel):
 
 class DAGDispatchRequest(BaseModel):
     template: str | None = None
+    goal: str | None = None
     name: str | None = None
     description: str | None = None
     steps: list[dict[str, Any]] | None = None
+    model: str | None = None
+    concurrent: bool = True
+
+
+class DAGPlanRequest(BaseModel):
+    goal: str
     model: str | None = None
 
 
@@ -552,18 +561,7 @@ def execute_domain_step(
     expected_artifact = workspaces_dir / f"{task_id}.{ext}"
 
     # Assemble contextual inputs from upstream pipeline steps if running in a DAG
-    pred_context = ""
-    if predecessor_artifacts:
-        pred_context = "\n\n[UPSTREAM PIPELINE ARTIFACTS IN THIS WORKFLOW]:\n"
-        for p_id, p_path in predecessor_artifacts.items():
-            pp = Path(p_path)
-            pred_context += f"• Predecessor step '{p_id}' generated: '{p_path}'\n"
-            if pp.exists() and pp.suffix in (".csv", ".py", ".md", ".txt", ".json"):
-                try:
-                    content_snip = pp.read_text(encoding="utf-8")[:800]
-                    pred_context += f"  File content preview:\n```\n{content_snip}\n```\n"
-                except Exception:
-                    pass
+    pred_context = format_predecessor_artifacts(predecessor_artifacts or {})
 
     def worker_executor(g: str, attempt_num: int, anti_patterns: str):
         if cancel_evt.is_set():
@@ -912,6 +910,11 @@ def list_dag_runs():
     return dag_orchestrator.list_dags()
 
 
+@app.get("/api/dag/templates")
+def get_dag_templates():
+    return dag_orchestrator.get_pipeline_templates()
+
+
 @app.get("/api/dag/{dag_id}")
 def get_dag_run(dag_id: str):
     dag = dag_orchestrator.get_dag(dag_id)
@@ -920,11 +923,34 @@ def get_dag_run(dag_id: str):
     return dag
 
 
+@app.post("/api/dag/plan")
+def plan_dag(req: DAGPlanRequest):
+    try:
+        gw = LLMGateway(endpoint=config.llm.endpoint, default_model=req.model or config.llm.model)
+        name, desc, step_defs = DAGPlanner.decompose_goal(req.goal, gateway=gw, model=req.model or config.llm.model)
+        return {
+            "success": True,
+            "pipeline_name": name,
+            "pipeline_description": desc,
+            "steps": [s.to_dict() for s in step_defs],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"DAG Planning Failed: {e}")
+
+
 @app.post("/api/dag/dispatch")
 def dispatch_dag(req: DAGDispatchRequest):
     try:
-        if req.template == "analytics":
-            dag_id = DAGOrchestrator.create_predefined_analytics_pipeline(dag_orchestrator)
+        if req.template:
+            dag_id = dag_orchestrator.instantiate_template(req.template)
+        elif req.goal:
+            gw = LLMGateway(endpoint=config.llm.endpoint, default_model=req.model or config.llm.model)
+            name, desc, step_defs = DAGPlanner.decompose_goal(req.goal, gateway=gw, model=req.model or config.llm.model)
+            dag_id = dag_orchestrator.create_dag(
+                name=req.name or name,
+                description=req.description or desc,
+                steps=step_defs,
+            )
         elif req.steps:
             step_defs = [
                 DAGStepDefinition(
@@ -942,11 +968,11 @@ def dispatch_dag(req: DAGDispatchRequest):
                 steps=step_defs,
             )
         else:
-            raise HTTPException(status_code=400, detail="Either 'template' or 'steps' must be provided.")
+            raise HTTPException(status_code=400, detail="Must provide 'template', 'goal', or 'steps'.")
 
         def run_in_bg():
             try:
-                dag_orchestrator.execute_dag(dag_id, dag_step_executor)
+                dag_orchestrator.execute_dag(dag_id, dag_step_executor, concurrent=req.concurrent)
             except Exception as e:
                 logger.exception("DAG background execution encountered error: %s", e)
 
