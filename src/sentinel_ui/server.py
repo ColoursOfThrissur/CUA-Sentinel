@@ -195,7 +195,7 @@ def init_standard_agents():
             description="Analyzes CSV datasets, computes aggregations, and synthesizes analytical reports.",
             author="Sentinel Biological Systems",
             capabilities=["data:csv", "data:stats", "data:report", "skill:compose"],
-            allowed_organs=["python_sandbox_run", "csv_analyze_and_report", "file_transform", "execute_skill", "skill_*", "broker_http_get", "system_filesystem_inspect"],
+            allowed_organs=["python_sandbox_run", "csv_analyze_and_report", "file_transform", "execute_skill", "skill_*", "broker_http_get", "system_filesystem_inspect", "system_process_inspect", "screen_capture"],
         ),
         AgentManifest(
             agent_id="code_engineer",
@@ -204,7 +204,7 @@ def init_standard_agents():
             description="Synthesizes Python scripts, modules, algorithms, and executes sandboxed code.",
             author="Sentinel Biological Systems",
             capabilities=["code:python", "code:execution", "code:testing", "skill:compose"],
-            allowed_organs=["python_sandbox_run", "windows_command", "execute_skill", "skill_*", "broker_http_get", "system_filesystem_inspect"],
+            allowed_organs=["python_sandbox_run", "windows_command", "execute_skill", "skill_*", "broker_http_get", "system_filesystem_inspect", "system_process_inspect", "screen_capture"],
         ),
         AgentManifest(
             agent_id="systems_reporter",
@@ -213,7 +213,7 @@ def init_standard_agents():
             description="Synthesizes executive markdown reports and system health briefings.",
             author="Sentinel Biological Systems",
             capabilities=["analysis:markdown", "reporting:executive", "skill:compose"],
-            allowed_organs=["python_sandbox_run", "file_transform", "execute_skill", "skill_*", "broker_http_get", "system_filesystem_inspect"],
+            allowed_organs=["python_sandbox_run", "file_transform", "execute_skill", "skill_*", "broker_http_get", "system_filesystem_inspect", "system_process_inspect", "screen_capture"],
         ),
     ]
 
@@ -226,11 +226,11 @@ def init_standard_agents():
             except Exception:
                 pass
         else:
-            # Sync allowed_organs to include execute_skill, skill_*, broker_http_get, and system_filesystem_inspect
+            # Sync allowed_organs to include execute_skill, skill_*, broker_http_get, system_filesystem_inspect, system_process_inspect, screen_capture
             curr_manifest = json.loads(existing["manifest_json"])
             organs = curr_manifest.get("allowed_organs", [])
             updated = False
-            for req_org in ["execute_skill", "skill_*", "broker_http_get", "system_filesystem_inspect"]:
+            for req_org in ["execute_skill", "skill_*", "broker_http_get", "system_filesystem_inspect", "system_process_inspect", "screen_capture"]:
                 if req_org not in organs:
                     organs.append(req_org)
                     updated = True

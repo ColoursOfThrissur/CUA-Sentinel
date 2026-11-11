@@ -74,7 +74,19 @@ class ReActController:
 
     def build_tool_catalog_prompt(self, agent_id: str | None = None) -> str:
         """Constructs tool catalog documentation formatted for ReAct agents."""
+        import fnmatch
         tools = self.broker.tool_registry.list_tools()
+
+        # If agent_id is provided, filter tools strictly to those granted in the agent manifest
+        if agent_id and getattr(self.broker, "pdp", None) and getattr(self.broker.pdp, "agent_registry", None):
+            manifest = self.broker.pdp.agent_registry.get_manifest(agent_id)
+            if manifest and manifest.allowed_organs:
+                allowed_set = set(manifest.allowed_organs)
+                tools = [
+                    t for t in tools
+                    if any(pat == t["name"] or fnmatch.fnmatch(t["name"], pat) for pat in allowed_set)
+                ]
+
         lines = ["You have access to the following host organs/tools:"]
         for t in tools:
             lines.append(f"\n- **`{t['name']}`**:")

@@ -379,3 +379,70 @@ def register_sensory_organs(registry: ToolRegistry):
 
         else:
             return {"success": False, "error": f"Unknown mode '{mode}'."}
+
+    @registry.register(
+        name="system_process_inspect",
+        description=(
+            "Inspects live host system processes and application memory/CPU utilization. "
+            "Modes: 'top_ram' (returns top processes by RAM/RSS consumption), "
+            "'top_cpu' (returns top processes by CPU utilization), "
+            "'summary' (system total/available RAM and CPU summary), "
+            "'find' (searches processes by name filter). Read-only sensory organ."
+        ),
+        effect_class=EffectClass.READ_ONLY,
+        parameters_schema={
+            "mode": {"type": "string", "description": "'top_ram', 'top_cpu', 'summary', or 'find'", "default": "top_ram"},
+            "limit": {"type": "integer", "description": "Max processes to return (default 15)", "default": 15},
+            "filter_name": {"type": "string", "description": "Optional substring to filter process name", "default": ""},
+        },
+    )
+    def system_process_inspect(params: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+        mode = params.get("mode", "top_ram").lower()
+        limit = int(params.get("limit", 15))
+        filter_name = (params.get("filter_name") or "").lower().strip()
+
+        mem = psutil.virtual_memory()
+        cpu_overall = psutil.cpu_percent(interval=None)
+
+        summary = {
+            "total_ram_mb": round(mem.total / (1024 * 1024), 2),
+            "available_ram_mb": round(mem.available / (1024 * 1024), 2),
+            "used_ram_mb": round(mem.used / (1024 * 1024), 2),
+            "used_ram_percent": mem.percent,
+            "cpu_percent": cpu_overall,
+        }
+
+        if mode == "summary":
+            return {"success": True, "mode": "summary", "system": summary}
+
+        procs = []
+        for p in psutil.process_iter(["pid", "name", "memory_info", "memory_percent", "cpu_percent"]):
+            try:
+                info = p.info
+                pname = info.get("name") or ""
+                if filter_name and filter_name not in pname.lower():
+                    continue
+                mem_mb = round(info["memory_info"].rss / (1024 * 1024), 2) if info.get("memory_info") else 0.0
+                mem_pct = round(info.get("memory_percent") or 0.0, 2)
+                cpu_pct = round(info.get("cpu_percent") or 0.0, 2)
+                procs.append({
+                    "pid": info["pid"],
+                    "name": pname,
+                    "memory_mb": mem_mb,
+                    "memory_percent": mem_pct,
+                    "cpu_percent": cpu_pct,
+                })
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+        if mode == "top_cpu":
+            procs.sort(key=lambda x: x["cpu_percent"], reverse=True)
+        else:  # top_ram, find
+            procs.sort(key=lambda x: x["memory_mb"], reverse=True)
+
+        return {
+            "success": True,
+            "mode": mode,
+            "system": summary,
+            "processes": procs[:limit],
+        }
