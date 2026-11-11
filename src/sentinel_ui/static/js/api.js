@@ -1,0 +1,71 @@
+/**
+ * Sentinel REST API Client
+ */
+
+const BASE_URL = window.location.origin;
+
+async function request(endpoint, options = {}) {
+  const url = `${BASE_URL}${endpoint}`;
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(options.headers || {}),
+  };
+
+  try {
+    const res = await fetch(url, { ...options, headers });
+    if (!res.ok) {
+      let errDetail = `${res.status} ${res.statusText}`;
+      try {
+        const body = await res.json();
+        if (body.detail) errDetail = body.detail;
+      } catch (e) {}
+      throw new Error(errDetail);
+    }
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      return await res.json();
+    }
+    return await res.text();
+  } catch (err) {
+    console.error(`API Error [${endpoint}]:`, err);
+    throw err;
+  }
+}
+
+export const api = {
+  // Telemetry & Hardware
+  getTelemetry: () => request('/api/telemetry'),
+  getConfig: () => request('/api/config'),
+  getModels: () => request('/api/models'),
+
+  // Tasks & Dispatch
+  getTasks: () => request('/api/tasks'),
+  dispatchTask: (data) => request('/api/tasks/dispatch', { method: 'POST', body: JSON.stringify(data) }),
+  cancelTask: (taskId) => request(`/api/tasks/${taskId}/cancel`, { method: 'POST' }),
+
+  // Multi-Turn ReAct Execution
+  executeReAct: (data) => request('/api/agent/react', { method: 'POST', body: JSON.stringify(data) }),
+
+  // Multi-Agent DAG Pipelines
+  getDagTemplates: () => request('/api/dag/templates'),
+  getDagRuns: () => request('/api/dag/runs'),
+  getDagStatus: (dagId) => request(`/api/dag/${dagId}`),
+  planDag: (data) => request('/api/dag/plan', { method: 'POST', body: JSON.stringify(data) }),
+  dispatchDag: (data) => request('/api/dag/dispatch', { method: 'POST', body: JSON.stringify(data) }),
+  cancelDag: (dagId) => request(`/api/dag/${dagId}/cancel`, { method: 'POST' }),
+
+  // Gate A Agents
+  getAgents: () => request('/api/agents'),
+  publishAgent: (data) => request('/api/agents/publish', { method: 'POST', body: JSON.stringify(data) }),
+  draftAgent: (data) => request('/api/agents/draft', { method: 'POST', body: JSON.stringify(data) }),
+
+  // Mistake Ledger, Skills, Organs
+  getMistakes: () => request('/api/mistakes'),
+  getSkills: () => request('/api/skills'),
+  executeSkill: (data) => request('/api/skills/execute', { method: 'POST', body: JSON.stringify(data) }),
+  getTools: () => request('/api/tools'),
+  getSideEffects: () => request('/api/side_effects'),
+
+  // Artifact Content Fetch
+  fetchArtifact: (url) => fetch(url).then(r => r.text()),
+};

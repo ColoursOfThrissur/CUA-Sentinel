@@ -1,0 +1,290 @@
+/* Sentinel Viewports: 3D Three.js Canvas, CSV Interactive Grid, Code & Markdown */
+
+/* 3D Viewport Canvas Container */
+.viewport-3d-container {
+  width: 100%;
+  height: 520px;
+  background: radial-gradient(circle at center, #111827 0%, #030712 100%);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.viewport-3d-canvas {
+  width: 100%;
+  height: 100%;
+  outline: none;
+}
+
+.viewport-3d-controls {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  display: flex;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(8px);
+  padding: 6px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border-glass);
+}
+
+.viewport-3d-controls button {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.viewport-3d-controls button:hover,
+.viewport-3d-controls button.active {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+}
+
+.viewport-3d-hint {
+  position: absolute;
+  bottom: 16px;
+  left: 20px;
+  font-size: 11px;
+  color: #64748b;
+  pointer-events: none;
+}
+
+/* CSV Table Grid Viewport */
+.csv-viewport-container {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.csv-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.csv-search-input {
+  background: var(--bg-glass-input);
+  border: 1px solid var(--border-glass);
+  border-radius: var(--radius-full);
+  padding: 6px 14px;
+  color: #fff;
+  font-size: 12px;
+  width: 240px;
+  outline: none;
+}
+
+.csv-search-input:focus {
+  border-color: var(--border-accent);
+}
+
+.csv-table-wrapper {
+  max-height: 480px;
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: rgba(10, 14, 22, 0.6);
+}
+
+.csv-spatial-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  text-align: left;
+}
+
+.csv-spatial-table th {
+  background: rgba(20, 27, 40, 0.95);
+  position: sticky;
+  top: 0;
+  padding: 10px 14px;
+  color: #94a3b8;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border-glass);
+  white-space: nowrap;
+}
+
+.csv-spatial-table td {
+  padding: 9px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  color: #e2e8f0;
+  white-space: nowrap;
+}
+
+.csv-spatial-table tr:hover td {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* Code Viewer Viewport */
+.code-viewport-container {
+  position: relative;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: #06090e;
+  border: 1px solid var(--border-glass);
+}
+
+.code-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  background: rgba(255, 255, 255, 0.02);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: #64748b;
+}
+
+.code-pre {
+  margin: 0;
+  padding: 18px;
+  overflow: auto;
+  max-height: 520px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: #e2e8f0;
+}
+
+/* Markdown Reader Viewport */
+.markdown-viewport-container {
+  padding: 10px 6px;
+  max-height: 540px;
+  overflow-y: auto;
+  color: #e2e8f0;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.markdown-viewport-container h1,
+.markdown-viewport-container h2,
+.markdown-viewport-container h3 {
+  color: #ffffff;
+  margin-top: 20px;
+  margin-bottom: 10px;
+  font-weight: 600;
+}
+
+.markdown-viewport-container p {
+  margin-bottom: 12px;
+}
+
+.markdown-viewport-container ul,
+.markdown-viewport-container ol {
+  padding-left: 24px;
+  margin-bottom: 12px;
+}
+
+.markdown-viewport-container li {
+  margin-bottom: 4px;
+}
+
+.markdown-viewport-container code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: rgba(255, 255, 255, 0.07);
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: #93c5fd;
+}
+
+/* DAG Canvas Visualizer */
+.dag-canvas-board {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  position: relative;
+  padding: 10px 0;
+}
+
+.dag-wave-row {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  position: relative;
+}
+
+.dag-wave-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent-cyan);
+}
+
+.dag-nodes-cluster {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.dag-node-card {
+  background: var(--bg-glass-elevated);
+  border: 1px solid var(--border-glass);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  position: relative;
+  transition: all var(--transition-fast);
+}
+
+.dag-node-card:hover {
+  border-color: rgba(255, 255, 255, 0.15);
+  transform: translateY(-2px);
+}
+
+.dag-node-card.Succeeded {
+  border-left: 3px solid var(--accent-emerald);
+}
+
+.dag-node-card.Running {
+  border-left: 3px solid var(--accent-primary);
+  box-shadow: 0 0 15px rgba(59, 130, 246, 0.25);
+}
+
+.dag-node-card.Failed {
+  border-left: 3px solid var(--accent-rose);
+}
+
+.dag-node-card.Skipped {
+  border-left: 3px solid #64748b;
+  opacity: 0.6;
+}
+
+.dag-node-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.dag-node-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+}
+
+.dag-node-contract {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  background: rgba(0, 0, 0, 0.3);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  color: #94a3b8;
+}

@@ -75,6 +75,10 @@ workspaces_dir = Path(config.storage.workspaces_dir).resolve()
 workspaces_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/workspaces", StaticFiles(directory=str(workspaces_dir)), name="workspaces")
 
+static_dir = (Path(__file__).parent / "static").resolve()
+static_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
 db = SentinelDB(config.storage.db_path)
 state_machine = StateMachine(db)
 verification_gate = VerificationGate(db)
@@ -2295,6 +2299,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
 @app.get("/", response_class=HTMLResponse)
 def index():
+    index_file = Path(__file__).parent / "static" / "index.html"
+    if index_file.exists():
+        return HTMLResponse(content=index_file.read_text(encoding="utf-8"))
     return HTMLResponse(content=DASHBOARD_HTML)
 
 
