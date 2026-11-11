@@ -275,8 +275,19 @@ class AgentRegistry:
         if tool_name in manifest.denied_tools:
             return False, f"Tool '{tool_name}' is explicitly denied in agent '{agent_id}' manifest."
 
-        # Check allowed organs (allow wildcard '*' or explicit tool name)
-        if "*" not in manifest.allowed_organs and tool_name not in manifest.allowed_organs:
+        # Check allowed organs (allow wildcard '*', explicit tool name, or prefix wildcard like 'skill_*')
+        allowed = False
+        if "*" in manifest.allowed_organs:
+            allowed = True
+        elif tool_name in manifest.allowed_organs:
+            allowed = True
+        else:
+            for pat in manifest.allowed_organs:
+                if pat.endswith("*") and tool_name.startswith(pat[:-1]):
+                    allowed = True
+                    break
+
+        if not allowed:
             return False, f"Tool '{tool_name}' is not in allowed_organs for agent '{agent_id}' (AT-A-05)."
 
         # Check irreversible permission

@@ -112,6 +112,7 @@ class LLMGateway:
         output_obj_path: str,
         anti_patterns: str = "",
         model: str | None = None,
+        relevant_skills: list[dict] | None = None,
     ) -> str:
         """Generates Blender 4.5 Python (bpy) script using qwen3.5:9b with error-aware self-healing."""
         escaped_path = output_obj_path.replace("\\", "/")
@@ -136,6 +137,18 @@ class LLMGateway:
         )
 
         prompt_body = f"User Request: Synthesize a 3D model for: '{goal}'\nTarget OBJ export path: '{escaped_path}'"
+
+        if relevant_skills:
+            skill_lines = [
+                f"• `{s.get('name')}`: {s.get('description')} (Module: skills/{s.get('name')}/tool.py)"
+                for s in relevant_skills[:3]
+            ]
+            prompt_body += (
+                f"\n\n[COMPOUND SKILL BANK - REUSABLE 3D TECHNIQUES]:\n"
+                f"Sentinel has previously verified these 3D skills:\n"
+                + "\n".join(skill_lines) + "\n"
+                f"You can borrow modeling structure, transform sequences, or naming patterns from them."
+            )
 
         if anti_patterns:
             prompt_body += (

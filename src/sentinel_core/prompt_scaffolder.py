@@ -82,9 +82,10 @@ class PromptScaffolder:
         artifact_path: str = "",
         anti_patterns: str = "",
         historic_lessons: list[str] | None = None,
+        relevant_skills: list[dict[str, Any]] | None = None,
         level: ScaffoldingLevel = ScaffoldingLevel.LEVEL_2_GUARDED,
     ) -> str:
-        """Enriches the user prompt with path targets and adaptive feedback."""
+        """Enriches the user prompt with path targets, compound skills, and adaptive feedback."""
         if level == ScaffoldingLevel.LEVEL_0_RAW:
             return goal
 
@@ -93,6 +94,23 @@ class PromptScaffolder:
 
         if escaped_path:
             prompt_parts.append(f"Target Output Path: '{escaped_path}'")
+
+        # Compound Skill Bank: inject previously verified skills for reuse
+        if relevant_skills:
+            skill_lines = []
+            for s in relevant_skills[:3]:
+                s_name = s.get("name", "")
+                s_desc = s.get("description", "")
+                s_dom = s.get("domain", "")
+                skill_lines.append(
+                    f"• `{s_name}` ({s_dom}): {s_desc} (Module: skills/{s_name}/tool.py)"
+                )
+            prompt_parts.append(
+                f"\n[COMPOUND SKILL BANK - REUSABLE VERIFIED SKILLS]:\n"
+                f"Sentinel has previously verified the following skills relevant to this goal:\n"
+                + "\n".join(skill_lines) + "\n"
+                f"You can import directly from these modules or invoke them to accelerate your solution."
+            )
 
         # In Level 3 (Adaptive), inject previous defects and cross-task memory
         if level == ScaffoldingLevel.LEVEL_3_ADAPTIVE:

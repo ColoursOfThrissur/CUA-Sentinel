@@ -35,7 +35,7 @@ from sentinel_core.dag_orchestrator import (
     DAGStepState,
 )
 from sentinel_adaptive.mistake_ledger import MistakeMemory
-from sentinel_adaptive.skill_bank import SkillBank
+from sentinel_adaptive.skill_bank import SkillBank, derive_semantic_slug
 from sentinel_broker.tool_registry import ToolRegistry
 from sentinel_broker.pdp import PolicyDecisionPoint
 from sentinel_broker.broker import ExecutionBroker
@@ -74,12 +74,13 @@ db = SentinelDB(config.storage.db_path)
 state_machine = StateMachine(db)
 verification_gate = VerificationGate(db)
 mistake_memory = MistakeMemory(db)
-skill_bank = SkillBank(db, config.storage.skills_dir)
 tool_registry = ToolRegistry()
 register_sensory_organs(tool_registry)
 register_motor_organs(tool_registry)
 register_blender_organs(tool_registry)
 register_data_organs(tool_registry)
+skill_bank = SkillBank(db, config.storage.skills_dir, tool_registry=tool_registry)
+skill_bank.register_distilled_skills_into_broker(tool_registry)
 
 # Agent Registry & Standard Gate A Agents
 agent_registry = AgentRegistry(db)
@@ -110,8 +111,8 @@ def init_standard_agents():
             version="1.0.0",
             description="Synthesizes procedural 3D meshes, shaders, and animations in Blender 4.5 LTS.",
             author="Sentinel Biological Systems",
-            capabilities=["3d:mesh", "3d:bpy", "3d:render"],
-            allowed_organs=["blender_run_python", "blender_launch_gui"],
+            capabilities=["3d:mesh", "3d:bpy", "3d:render", "skill:compose"],
+            allowed_organs=["blender_run_python", "blender_launch_gui", "execute_skill", "skill_*"],
         ),
         AgentManifest(
             agent_id="data_analyst",
@@ -119,8 +120,8 @@ def init_standard_agents():
             version="1.0.0",
             description="Analyzes CSV datasets, computes aggregations, and synthesizes analytical reports.",
             author="Sentinel Biological Systems",
-            capabilities=["data:csv", "data:stats", "data:report"],
-            allowed_organs=["python_sandbox_run", "csv_analyze_and_report", "file_transform"],
+            capabilities=["data:csv", "data:stats", "data:report", "skill:compose"],
+            allowed_organs=["python_sandbox_run", "csv_analyze_and_report", "file_transform", "execute_skill", "skill_*"],
         ),
         AgentManifest(
             agent_id="code_engineer",
@@ -128,8 +129,8 @@ def init_standard_agents():
             version="1.0.0",
             description="Synthesizes Python scripts, modules, algorithms, and executes sandboxed code.",
             author="Sentinel Biological Systems",
-            capabilities=["code:python", "code:execution", "code:testing"],
-            allowed_organs=["python_sandbox_run", "windows_command"],
+            capabilities=["code:python", "code:execution", "code:testing", "skill:compose"],
+            allowed_organs=["python_sandbox_run", "windows_command", "execute_skill", "skill_*"],
         ),
         AgentManifest(
             agent_id="systems_reporter",
@@ -137,24 +138,35 @@ def init_standard_agents():
             version="1.0.0",
             description="Synthesizes executive markdown reports and system health briefings.",
             author="Sentinel Biological Systems",
-            capabilities=["analysis:markdown", "reporting:executive"],
-            allowed_organs=["python_sandbox_run", "file_transform"],
+            capabilities=["analysis:markdown", "reporting:executive", "skill:compose"],
+            allowed_organs=["python_sandbox_run", "file_transform", "execute_skill", "skill_*"],
         ),
     ]
 
     for m in std_agents:
-        rec = agent_registry.get_agent_record(m.agent_id)
-        if not rec:
+        existing = agent_registry.get_agent_record(m.agent_id)
+        if not existing:
             agent_registry.register_draft(m)
             try:
                 agent_registry.publish_release(m.agent_id, m.version, publisher="Sentinel Core")
             except Exception:
                 pass
-        elif rec["status"] != "Published":
-            rel = agent_registry.get_release(m.agent_id, m.version)
-            if rel:
+        else:
+            # Sync allowed_organs to include execute_skill and skill_*
+            curr_manifest = json.loads(existing["manifest_json"])
+            organs = curr_manifest.get("allowed_organs", [])
+            updated = False
+            for req_org in ["execute_skill", "skill_*"]:
+                if req_org not in organs:
+                    organs.append(req_org)
+                    updated = True
+            if updated or existing["status"] != "Published":
+                curr_manifest["allowed_organs"] = organs
                 with db.transaction() as c:
-                    c.execute("UPDATE agents SET status = 'Published' WHERE id = ?", (m.agent_id,))
+                    c.execute(
+                        "UPDATE agents SET manifest_json = ?, status = 'Published' WHERE id = ?",
+                        (json.dumps(curr_manifest), m.agent_id),
+                    )
 
 
 init_standard_agents()
@@ -340,6 +352,28 @@ def list_skills():
     return skill_bank.list_skills()
 
 
+@app.get("/api/skills/search")
+def search_skills(q: str, domain: str | None = None, limit: int = 5):
+    return skill_bank.find_relevant_skills(q, domain=domain, limit=limit)
+
+
+@app.get("/api/skills/{skill_name}")
+def get_skill_details(skill_name: str):
+    s = skill_bank.get_skill(skill_name)
+    if not s:
+        raise HTTPException(status_code=404, detail=f"Skill '{skill_name}' not found")
+    return s
+
+
+@app.post("/api/skills/execute")
+def api_execute_skill(req: ExecuteSkillRequest):
+    try:
+        res = skill_bank.execute_skill(req.skill_name, req.params)
+        return {"success": True, "skill_name": req.skill_name, "result": res}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @app.get("/api/tools")
 def list_tools():
     return tool_registry.list_tools()
@@ -476,12 +510,14 @@ def execute_domain_step(
 
         if domain == "3d":
             logger.info("Executing 3D synthesis via LLM (%s) attempt %d", selected_model, attempt_num)
+            rel_skills = skill_bank.find_relevant_skills(goal, domain="3d", limit=3)
             blender_script = synthesize_blender_script(
                 goal=goal,
                 output_obj_path=str(expected_artifact),
                 anti_patterns=anti_patterns,
                 use_llm=True,
                 model=selected_model,
+                relevant_skills=rel_skills,
             )
             preflight = PreFlightLinter.sanitize(blender_script, domain="3d")
             blender_script = preflight.code
@@ -506,7 +542,21 @@ def execute_domain_step(
                 f"(csv, io, random, math, datetime) to generate the CSV dataset and write it directly to '{out_path_str}'.\n"
                 "Output ONLY executable Python code inside a ```python ``` block."
             )
-            prompt_data = f"Goal: {goal}\nTarget Output CSV Path: '{out_path_str}'{pred_context}"
+            rel_skills = skill_bank.find_relevant_skills(goal, domain="data", limit=3)
+            skill_context = ""
+            if rel_skills:
+                skill_lines = [
+                    f"• `{s.get('name')}`: {s.get('description')} (Module: skills/{s.get('name')}/tool.py)"
+                    for s in rel_skills
+                ]
+                skill_context = (
+                    "\n\n[COMPOUND SKILL BANK - REUSABLE DATA GENERATORS]:\n"
+                    "Sentinel has previously verified these tabular generation skills:\n"
+                    + "\n".join(skill_lines) + "\n"
+                    "You can reference their generator patterns or structure where applicable."
+                )
+
+            prompt_data = f"Goal: {goal}\nTarget Output CSV Path: '{out_path_str}'{pred_context}{skill_context}"
             if anti_patterns:
                 prompt_data += f"\n[PREVIOUS ATTEMPT FAILED]:\n{anti_patterns}\nEnsure the CSV file is written to '{out_path_str}' with valid header and rows."
 
@@ -528,12 +578,14 @@ def execute_domain_step(
             gw = LLMGateway(endpoint=config.llm.endpoint, default_model=selected_model)
             scaffolding_lvl = ScaffoldingLevel.LEVEL_3_ADAPTIVE if anti_patterns else ScaffoldingLevel.LEVEL_2_GUARDED
             sys_inst = PromptScaffolder.build_system_prompt("code", level=scaffolding_lvl)
+            rel_skills = skill_bank.find_relevant_skills(goal, domain="code", limit=3)
             prompt_code = PromptScaffolder.build_user_prompt(
                 goal=goal,
                 domain="code",
                 artifact_path=str(expected_artifact),
                 anti_patterns=anti_patterns,
                 level=scaffolding_lvl,
+                relevant_skills=rel_skills,
             ) + pred_context
 
             raw_code = gw.generate(prompt=prompt_code, system=sys_inst, model=selected_model)
@@ -580,12 +632,13 @@ def execute_domain_step(
             return verification_gate.verify_markdown_report(p, min_words=25)
 
     gw = LLMGateway(endpoint=config.llm.endpoint, default_model=selected_model)
+    semantic_slug = derive_semantic_slug(goal, domain=domain)
     result = pilot.run_task(
         task_id=task_id,
         goal=goal,
         worker_executor=worker_executor,
         verifier=verifier,
-        skill_distillation_name=f"skill_{task_id}",
+        skill_distillation_name=semantic_slug,
         max_attempts=max_attempts,
         domain=domain,
         llm_gateway=gw,
@@ -981,9 +1034,30 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
 
     <!-- Tab 4: Skills -->
-    <div id="tab-skills" class="tab-content hidden bg-slate-800/60 border border-slate-700 rounded-xl p-5 space-y-3">
-      <h2 class="text-base font-bold text-slate-100">Skill Bank & Synthesized Tools</h2>
-      <div id="skills-container" class="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
+    <div id="tab-skills" class="tab-content hidden bg-slate-800/60 border border-slate-700 rounded-xl p-5 space-y-4">
+      <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-700/80 pb-3">
+        <div>
+          <h2 class="text-base font-bold text-slate-100 flex items-center gap-2">
+            <span>🧠</span> Reusable Compound Skill Bank
+          </h2>
+          <p class="text-xs text-slate-400">Synthesized verified capabilities dynamically discoverable and invocable by agents.</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <div class="relative">
+            <input type="text" id="skill-search-input" oninput="filterSkillsUI()" placeholder="Search skills by keyword..." 
+                   class="bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 pl-8 text-xs text-slate-100 placeholder-slate-500 focus:border-purple-500 outline-none w-64 shadow-inner">
+            <span class="absolute left-2.5 top-2 text-xs text-slate-500">🔍</span>
+          </div>
+          <select id="skill-domain-filter" onchange="filterSkillsUI()" class="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:border-purple-500 outline-none">
+            <option value="all">All Domains</option>
+            <option value="code">Python Code</option>
+            <option value="3d">3D Blender</option>
+            <option value="data">Data CSV</option>
+            <option value="report">Markdown Report</option>
+          </select>
+        </div>
+      </div>
+      <div id="skills-container" class="grid grid-cols-1 md:grid-cols-2 gap-3.5 pt-1">
         <p class="text-xs text-slate-500">Loading skills...</p>
       </div>
     </div>
@@ -1300,24 +1374,103 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       `).join('');
     }
 
+    let allSkillsCache = [];
+
     async function loadSkills() {
-      const res = await fetch('/api/skills');
-      const list = await res.json();
+      try {
+        const res = await fetch('/api/skills');
+        allSkillsCache = await res.json();
+        renderSkills(allSkillsCache);
+      } catch (e) {
+        const c = document.getElementById('skills-container');
+        if (c) c.innerHTML = '<p class="text-xs text-rose-400">Failed to load skills: ' + e + '</p>';
+      }
+    }
+
+    function filterSkillsUI() {
+      const q = (document.getElementById('skill-search-input')?.value || '').toLowerCase().trim();
+      const dom = document.getElementById('skill-domain-filter')?.value || 'all';
+      const filtered = allSkillsCache.filter(s => {
+        let meta = {};
+        try { meta = JSON.parse(s.metadata || '{}'); } catch(e){}
+        const sDom = meta.domain || (s.code.includes('bpy') ? '3d' : 'code');
+        const matchesDom = (dom === 'all') || (sDom === dom);
+        const matchesQ = !q || s.name.toLowerCase().includes(q) || (s.description || '').toLowerCase().includes(q) || s.code.toLowerCase().includes(q);
+        return matchesDom && matchesQ;
+      });
+      renderSkills(filtered);
+    }
+
+    function renderSkills(list) {
       const c = document.getElementById('skills-container');
-      if (list.length === 0) {
-        c.innerHTML = '<p class="text-xs text-slate-500">No skills distilled yet.</p>';
+      if (!c) return;
+      if (!list || list.length === 0) {
+        c.innerHTML = '<p class="text-xs text-slate-500 col-span-2 p-6 text-center">No skills match the query.</p>';
         return;
       }
-      c.innerHTML = list.map(s => `
-        <div class="bg-slate-900/70 border border-purple-500/20 rounded-lg p-3 space-y-2">
-          <div class="flex items-center justify-between">
-            <span class="text-purple-400 font-bold text-xs">${s.name}</span>
-            <span class="text-[10px] text-slate-400">v${s.version}</span>
+      c.innerHTML = list.map(s => {
+        let meta = {};
+        try { meta = JSON.parse(s.metadata || '{}'); } catch(e){}
+        const domain = meta.domain || (s.code.includes('bpy') ? '3d' : 'code');
+        const domainBadge = domain === '3d' ? 'bg-sky-500/20 text-sky-400 border-sky-500/30' :
+                            domain === 'data' ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' :
+                            domain === 'report' ? 'bg-amber-500/20 text-amber-400 border-amber-500/30' :
+                            'bg-purple-500/20 text-purple-400 border-purple-500/30';
+        const domainIcon = domain === '3d' ? '🧊 3D' : domain === 'data' ? '📊 Data' : domain === 'report' ? '📝 Report' : '💻 Code';
+
+        return `
+          <div class="bg-slate-900/90 border border-purple-500/20 hover:border-purple-500/40 rounded-xl p-4 space-y-3 shadow-md flex flex-col justify-between transition">
+            <div class="space-y-2">
+              <div class="flex items-center justify-between gap-2">
+                <div class="flex items-center gap-2">
+                  <span class="px-2 py-0.5 text-[10px] font-mono font-bold rounded border ${domainBadge}">${domainIcon}</span>
+                  <span class="text-purple-300 font-bold text-xs font-mono">${s.name}</span>
+                </div>
+                <span class="text-[10px] text-slate-400 font-mono">v${s.version}</span>
+              </div>
+              <p class="text-xs text-slate-300 leading-relaxed">${s.description || 'Verified reusable autonomous skill.'}</p>
+              <details class="cursor-pointer">
+                <summary class="text-[11px] text-slate-400 hover:text-slate-200 select-none font-mono">View Implementation Code ▾</summary>
+                <pre class="mt-2 bg-slate-950 border border-slate-800 p-2.5 rounded text-[10px] font-mono text-emerald-400 overflow-x-auto max-h-40 select-text leading-relaxed">${s.code.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>
+              </details>
+            </div>
+            <div class="pt-2 border-t border-slate-800/80 flex items-center justify-between gap-2">
+              <span class="text-[10px] text-slate-500 font-mono">Module: skills/${s.name}/tool.py</span>
+              <button onclick="runSkillInteractive('${s.name}')" class="px-3 py-1 bg-purple-600 hover:bg-purple-500 text-white rounded text-[11px] font-semibold transition flex items-center gap-1.5 shadow">
+                <span>⚡</span> Run Skill
+              </button>
+            </div>
           </div>
-          <p class="text-xs text-slate-300">${s.description}</p>
-          <pre class="bg-slate-950 p-2 rounded text-[10px] font-mono text-emerald-400 overflow-x-auto max-h-36">${s.code}</pre>
-        </div>
-      `).join('');
+        `;
+      }).join('');
+    }
+
+    async function runSkillInteractive(skillName) {
+      if (!confirm(`Execute verified skill '${skillName}' in isolated broker sandbox?`)) return;
+      try {
+        const res = await fetch('/api/skills/execute', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ skill_name: skillName, params: {} })
+        });
+        const d = await res.json();
+        if (res.ok) {
+          const art = d.result?.artifact_path;
+          let msg = `✓ Skill '${skillName}' executed successfully!`;
+          if (art) {
+            msg += `\\nArtifact created: ${art}`;
+          }
+          if (d.result?.stdout) {
+            msg += `\\nOutput:\\n${d.result.stdout.slice(0, 300)}`;
+          }
+          alert(msg);
+          loadTasks();
+        } else {
+          alert('Execution error: ' + (d.detail || JSON.stringify(d)));
+        }
+      } catch (e) {
+        alert('Skill execution failed: ' + e);
+      }
     }
 
     async function loadTools() {

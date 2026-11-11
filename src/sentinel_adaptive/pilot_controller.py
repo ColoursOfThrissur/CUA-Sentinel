@@ -81,6 +81,7 @@ class AdaptivePilotController:
                         name=skill_distillation_name,
                         description=f"Auto-synthesized skill for: {goal}",
                         code=worker_output["synthesized_code"],
+                        domain=domain or "",
                         parameters_schema=worker_output.get("parameters_schema", {}),
                     )
 

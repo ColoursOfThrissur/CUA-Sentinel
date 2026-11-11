@@ -146,6 +146,7 @@ def synthesize_blender_script(
     anti_patterns: str = "",
     use_llm: bool = True,
     model: str = "qwen3.5:9b",
+    relevant_skills: list[dict] | None = None,
 ) -> str:
     """Generates Blender 4.5 Python script.
     Primary pathway: local Qwen (qwen3.5:9b) generating creative, customized 3D meshes.
@@ -161,6 +162,7 @@ def synthesize_blender_script(
                     output_obj_path=output_obj_path,
                     anti_patterns=anti_patterns,
                     model=model,
+                    relevant_skills=relevant_skills,
                 )
                 return code
             else:
