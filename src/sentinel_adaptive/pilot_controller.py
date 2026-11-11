@@ -47,6 +47,7 @@ class AdaptivePilotController:
         max_attempts: int = 3,
         domain: str = "",
         llm_gateway: Any | None = None,
+        cancellation_event: Any | None = None,
     ) -> PilotExecutionResult:
         """Executes a bounded pilot loop with automatic mistake capture and adaptive re-planning."""
         # 1. Initialize Task in State Machine
@@ -55,15 +56,70 @@ class AdaptivePilotController:
         distilled = None
 
         while True:
+            # Check for cancellation before starting an attempt
+            if cancellation_event and cancellation_event.is_set():
+                task = self.state_machine.cancel_task(task_id, reason="Operator cancelled task")
+                return PilotExecutionResult(
+                    task=task,
+                    attempts_taken=attempts_taken,
+                    success=False,
+                    distilled_skill=None,
+                    mistakes_encountered=self.mistake_memory.get_task_mistakes(task_id),
+                )
+
+            curr_task = self.state_machine.get_task(task_id)
+            if curr_task and curr_task.state.value == "Cancelled":
+                return PilotExecutionResult(
+                    task=curr_task,
+                    attempts_taken=attempts_taken,
+                    success=False,
+                    distilled_skill=None,
+                    mistakes_encountered=self.mistake_memory.get_task_mistakes(task_id),
+                )
+
             # 2. Check if we have previous mistakes or cross-task heuristics to formulate negative prompt constraints
             anti_patterns = self.mistake_memory.format_anti_pattern_prompt(task_id, domain=domain)
 
             # 3. Start Next Attempt (allocates monotonic lease)
-            task, lease = self.state_machine.start_next_attempt(task_id)
+            try:
+                task, lease = self.state_machine.start_next_attempt(task_id)
+            except Exception as e:
+                curr_task = self.state_machine.get_task(task_id)
+                if curr_task and curr_task.state.value == "Cancelled":
+                    return PilotExecutionResult(
+                        task=curr_task,
+                        attempts_taken=attempts_taken,
+                        success=False,
+                        distilled_skill=None,
+                        mistakes_encountered=self.mistake_memory.get_task_mistakes(task_id),
+                    )
+                raise e
+
             attempts_taken = task.attempt_count
 
             # 4. Invoke Worker with Goal + Adaptive Anti-Pattern Constraints
             worker_output = worker_executor(goal, attempts_taken, anti_patterns)
+
+            # Check for cancellation immediately after worker execution
+            if cancellation_event and cancellation_event.is_set():
+                task = self.state_machine.cancel_task(task_id, reason="Operator cancelled task")
+                return PilotExecutionResult(
+                    task=task,
+                    attempts_taken=attempts_taken,
+                    success=False,
+                    distilled_skill=None,
+                    mistakes_encountered=self.mistake_memory.get_task_mistakes(task_id),
+                )
+
+            curr_task = self.state_machine.get_task(task_id)
+            if curr_task and curr_task.state.value == "Cancelled":
+                return PilotExecutionResult(
+                    task=curr_task,
+                    attempts_taken=attempts_taken,
+                    success=False,
+                    distilled_skill=None,
+                    mistakes_encountered=self.mistake_memory.get_task_mistakes(task_id),
+                )
 
             # 5. Transition to Verifying State
             self.state_machine.transition_to_verifying(task_id, lease.attempt_id, lease.lease_token)

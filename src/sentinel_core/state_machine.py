@@ -20,15 +20,17 @@ class TaskState(str, Enum):
     SUCCEEDED = "Succeeded"
     FAILED = "Failed"
     NEEDS_RECONCILIATION = "NeedsReconciliation"
+    CANCELLED = "Cancelled"
 
 
 LEGAL_TRANSITIONS: dict[TaskState, set[TaskState]] = {
-    TaskState.QUEUED: {TaskState.RUNNING, TaskState.FAILED},
-    TaskState.RUNNING: {TaskState.VERIFYING, TaskState.FAILED, TaskState.NEEDS_RECONCILIATION},
-    TaskState.VERIFYING: {TaskState.SUCCEEDED, TaskState.RUNNING, TaskState.FAILED, TaskState.NEEDS_RECONCILIATION},
-    TaskState.NEEDS_RECONCILIATION: {TaskState.QUEUED, TaskState.FAILED},
+    TaskState.QUEUED: {TaskState.RUNNING, TaskState.FAILED, TaskState.CANCELLED},
+    TaskState.RUNNING: {TaskState.VERIFYING, TaskState.FAILED, TaskState.NEEDS_RECONCILIATION, TaskState.CANCELLED},
+    TaskState.VERIFYING: {TaskState.SUCCEEDED, TaskState.RUNNING, TaskState.FAILED, TaskState.NEEDS_RECONCILIATION, TaskState.CANCELLED},
+    TaskState.NEEDS_RECONCILIATION: {TaskState.QUEUED, TaskState.FAILED, TaskState.CANCELLED},
     TaskState.SUCCEEDED: set(),  # Terminal
     TaskState.FAILED: set(),     # Terminal
+    TaskState.CANCELLED: set(),  # Terminal
 }
 
 
@@ -273,6 +275,53 @@ class StateMachine:
                         )
                 recovered.append(task_id)
         return recovered
+
+    def cancel_task(self, task_id: str, reason: str = "Operator cancelled task") -> TaskRecord:
+        """
+        AT-B-05: Cancels an active or queued task, fences out any active attempt leases,
+        and transitions the task state to CANCELLED.
+        """
+        now = time.time()
+        with self.db.transaction() as c:
+            c.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
+            row = c.fetchone()
+            if not row:
+                raise ValueError(f"Task '{task_id}' not found.")
+
+            current_state = TaskState(row["state"])
+            if current_state in (TaskState.SUCCEEDED, TaskState.FAILED, TaskState.CANCELLED):
+                # Already terminal
+                return self.get_task(task_id)
+
+            # 1. Fence out any active attempts for this task to revoke their leases
+            c.execute(
+                "UPDATE attempts SET status = 'FencedOut', finished_at = ? WHERE task_id = ? AND status = 'Active'",
+                (now, task_id),
+            )
+
+            # 2. Update task state to Cancelled
+            c.execute(
+                "UPDATE tasks SET state = 'Cancelled', failure_reason = ?, updated_at = ? WHERE id = ?",
+                (reason, now, task_id),
+            )
+            c.execute(
+                "INSERT INTO task_transitions (task_id, from_state, to_state, reason, transition_ts) VALUES (?, ?, 'Cancelled', ?, ?)",
+                (task_id, current_state.value, reason, now),
+            )
+
+            c.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
+            r = c.fetchone()
+            return TaskRecord(
+                id=r["id"],
+                title=r["title"],
+                description=r["description"],
+                state=TaskState(r["state"]),
+                attempt_count=r["attempt_count"],
+                max_attempts=r["max_attempts"],
+                created_at=r["created_at"],
+                updated_at=r["updated_at"],
+                failure_reason=r["failure_reason"],
+            )
 
     def _assert_transition(self, cursor: sqlite3.Cursor, task_id: str, target_state: TaskState, reason: str, now: float) -> TaskRecord:
         cursor.execute("SELECT state FROM tasks WHERE id = ?", (task_id,))

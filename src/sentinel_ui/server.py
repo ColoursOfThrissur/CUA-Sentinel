@@ -113,6 +113,8 @@ if (staging_dir / "python.exe").exists():
         logger.warning("Could not initialize AppContainerHost: %s", e)
 
 pilot = AdaptivePilotController(state_machine, verification_gate, mistake_memory, skill_bank)
+active_cancellation_tokens: dict[str, threading.Event] = {}
+active_running_pids: dict[str, int] = {}
 
 
 def init_standard_agents():
@@ -353,6 +355,66 @@ def list_tasks():
     return res
 
 
+@app.post("/api/tasks/{task_id}/cancel")
+def cancel_task_endpoint(task_id: str):
+    logger.info("Cancellation requested for task '%s' (AT-B-05)", task_id)
+    # Signal cancellation event
+    evt = active_cancellation_tokens.get(task_id)
+    if evt:
+        evt.set()
+
+    # Terminate process tree if recorded
+    pid = active_running_pids.get(task_id)
+    if pid:
+        try:
+            p = psutil.Process(pid)
+            for child in p.children(recursive=True):
+                try:
+                    child.kill()
+                except Exception:
+                    pass
+            p.kill()
+            logger.info("Terminated worker process PID %d for task '%s'", pid, task_id)
+        except Exception as e:
+            logger.debug("Process kill exception (process may have completed): %s", e)
+
+    try:
+        updated = state_machine.cancel_task(task_id, reason="Cancelled by operator (AT-B-05)")
+        return {"success": True, "task_id": task_id, "state": updated.state.value}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/dag/{dag_id}/cancel")
+def cancel_dag_endpoint(dag_id: str):
+    logger.info("Cancellation requested for DAG '%s' (AT-B-05)", dag_id)
+    dag = dag_orchestrator.cancel_dag(dag_id, reason="Pipeline cancelled by operator (AT-B-05)")
+
+    for step in dag.get("steps", []):
+        st_task_id = f"task_{dag_id}_{step['step_id']}"
+        evt = active_cancellation_tokens.get(st_task_id)
+        if evt:
+            evt.set()
+        pid = active_running_pids.get(st_task_id)
+        if pid:
+            try:
+                p = psutil.Process(pid)
+                for child in p.children(recursive=True):
+                    try:
+                        child.kill()
+                    except Exception:
+                        pass
+                p.kill()
+            except Exception:
+                pass
+        try:
+            state_machine.cancel_task(st_task_id, reason="DAG cancelled by operator")
+        except Exception:
+            pass
+
+    return {"success": True, "dag_id": dag_id, "state": dag.get("state")}
+
+
 @app.get("/api/mistakes")
 def list_mistakes():
     rows = db.execute_read("SELECT * FROM mistake_ledger ORDER BY ts DESC LIMIT 50")
@@ -467,6 +529,9 @@ def execute_domain_step(
     predecessor_artifacts: dict[str, str] | None = None,
     launch_gui: bool = False,
 ) -> dict[str, Any]:
+    cancel_evt = threading.Event()
+    active_cancellation_tokens[task_id] = cancel_evt
+
     lower_goal = goal.lower()
     if domain == "3d":
         ext = "obj"
@@ -499,6 +564,9 @@ def execute_domain_step(
                     pass
 
     def worker_executor(g: str, attempt_num: int, anti_patterns: str):
+        if cancel_evt.is_set():
+            raise InterruptedError(f"Task '{task_id}' was cancelled by operator.")
+
         active_attempt = state_machine.db.execute_one(
             "SELECT id, lease_token FROM attempts WHERE task_id = ? AND status = 'Active'",
             (task_id,),
@@ -507,6 +575,8 @@ def execute_domain_step(
         lease = active_attempt["lease_token"] if active_attempt else state_machine.leases.get_active_lease()
 
         def run_tool_fenced(tool_name: str, params: dict):
+            if cancel_evt.is_set():
+                raise InterruptedError(f"Task '{task_id}' was cancelled by operator.")
             if config.isolation.use_appcontainer and appcontainer_host:
                 logger.info("Executing tool '%s' under AppContainer isolation fence for agent '%s'", tool_name, effective_agent)
             call_res = broker.dispatch_call(
@@ -643,18 +713,23 @@ def execute_domain_step(
         else:
             return verification_gate.verify_markdown_report(p, min_words=25)
 
-    gw = LLMGateway(endpoint=config.llm.endpoint, default_model=selected_model)
-    semantic_slug = derive_semantic_slug(goal, domain=domain)
-    result = pilot.run_task(
-        task_id=task_id,
-        goal=goal,
-        worker_executor=worker_executor,
-        verifier=verifier,
-        skill_distillation_name=semantic_slug,
-        max_attempts=max_attempts,
-        domain=domain,
-        llm_gateway=gw,
-    )
+    try:
+        gw = LLMGateway(endpoint=config.llm.endpoint, default_model=selected_model)
+        semantic_slug = derive_semantic_slug(goal, domain=domain)
+        result = pilot.run_task(
+            task_id=task_id,
+            goal=goal,
+            worker_executor=worker_executor,
+            verifier=verifier,
+            skill_distillation_name=semantic_slug,
+            max_attempts=max_attempts,
+            domain=domain,
+            llm_gateway=gw,
+            cancellation_event=cancel_evt,
+        )
+    finally:
+        active_cancellation_tokens.pop(task_id, None)
+        active_running_pids.pop(task_id, None)
 
     gui_info = None
     if launch_gui and expected_artifact.exists() and domain == "3d":
@@ -962,7 +1037,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <div id="dag-live-banner" class="hidden bg-slate-950/80 border border-indigo-500/40 rounded-lg p-3 text-xs space-y-1">
         <div class="flex items-center justify-between">
           <span id="dag-live-title" class="font-bold text-indigo-400">⏳ Pipeline Running...</span>
-          <span id="dag-live-badge" class="px-2 py-0.5 text-[10px] font-semibold rounded bg-indigo-500/20 text-indigo-400 border border-indigo-500/30">RUNNING</span>
+          <div class="flex items-center gap-2">
+            <span id="dag-live-badge" class="px-2 py-0.5 text-[10px] font-semibold rounded bg-indigo-500/20 text-indigo-400 border border-indigo-500/30">RUNNING</span>
+            <button id="btn-cancel-dag" onclick="cancelCurrentDAG()" class="px-2.5 py-1 bg-rose-600/30 hover:bg-rose-600 text-rose-300 hover:text-white rounded border border-rose-500/40 text-[10px] font-bold transition">⏹ Cancel Pipeline</button>
+          </div>
         </div>
         <p id="dag-live-detail" class="text-slate-300 text-[11px]">Choreographing agents across pipeline steps...</p>
       </div>
@@ -1342,7 +1420,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       tbody.innerHTML = tasks.map(t => {
         const badgeColor = t.state === 'Succeeded' ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' :
                            t.state === 'Failed' ? 'bg-rose-500/20 text-rose-400 border-rose-500/30' :
-                           'bg-sky-500/20 text-sky-400 border-sky-500/30';
+                           t.state === 'Cancelled' ? 'bg-amber-500/20 text-amber-400 border-amber-500/30' :
+                           'bg-sky-500/20 text-sky-400 border-sky-500/30 animate-pulse';
+        const isCancellable = ['Running', 'Queued', 'Verifying'].includes(t.state);
+        const cancelBtn = isCancellable
+          ? `<button onclick="cancelTask('${t.id}')" title="Cancel execution and revoke leases" class="ml-2 px-2 py-0.5 bg-rose-600/30 hover:bg-rose-600 border border-rose-500/40 text-rose-300 hover:text-white rounded text-[10px] font-bold transition">⏹ Cancel</button>`
+          : '';
+
         let artLink = '<span class="text-slate-500 font-mono text-[11px]">-</span>';
         if (t.artifact_filename) {
           const ext = (t.artifact_ext || '').toUpperCase();
@@ -1363,12 +1447,30 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <tr class="hover:bg-slate-700/30">
             <td class="p-2.5 font-mono text-slate-300">${t.id}</td>
             <td class="p-2.5 font-medium text-slate-200">${t.title}</td>
-            <td class="p-2.5"><span class="px-2 py-0.5 border rounded-full text-[10px] font-semibold ${badgeColor}">${t.state}</span></td>
+            <td class="p-2.5">
+              <span class="px-2 py-0.5 border rounded-full text-[10px] font-semibold ${badgeColor}">${t.state}</span>
+              ${cancelBtn}
+            </td>
             <td class="p-2.5 text-slate-400">${t.attempt_count} / ${t.max_attempts}</td>
             <td class="p-2.5 text-slate-400">${artLink}</td>
           </tr>
         `;
       }).join('');
+    }
+
+    async function cancelTask(taskId) {
+      if (!confirm(`Cancel task '${taskId}' and revoke its leases immediately?`)) return;
+      try {
+        const res = await fetch(`/api/tasks/${taskId}/cancel`, { method: 'POST' });
+        const data = await res.json();
+        if (res.ok) {
+          loadTasks();
+        } else {
+          alert('Failed to cancel task: ' + (data.detail || JSON.stringify(data)));
+        }
+      } catch (e) {
+        alert('Error cancelling task: ' + e);
+      }
     }
 
     async function loadMistakes() {
@@ -1724,16 +1826,44 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       loadTools();
     }
 
+    let currentRunningDagId = null;
+
+    async function cancelCurrentDAG() {
+      if (!currentRunningDagId) return;
+      if (!confirm(`Cancel active pipeline '${currentRunningDagId}' and drain all active steps?`)) return;
+      try {
+        const res = await fetch(`/api/dag/${currentRunningDagId}/cancel`, { method: 'POST' });
+        const d = await res.json();
+        if (res.ok) {
+          document.getElementById('dag-live-title').innerText = `⏹ Pipeline Cancelled (${currentRunningDagId})`;
+          document.getElementById('dag-live-badge').innerText = 'CANCELLED';
+          document.getElementById('dag-live-badge').className = 'px-2 py-0.5 text-[10px] font-semibold rounded bg-amber-500/20 text-amber-400 border border-amber-500/30';
+          document.getElementById('dag-live-detail').innerText = 'Pipeline was stopped by operator. Active steps drained.';
+          document.getElementById('btn-cancel-dag').classList.add('hidden');
+          document.getElementById('btn-launch-pipeline').disabled = false;
+          document.getElementById('btn-launch-pipeline').classList.remove('opacity-50');
+          loadDAGRuns();
+          loadTasks();
+        } else {
+          alert('Failed to cancel pipeline: ' + (d.detail || JSON.stringify(d)));
+        }
+      } catch (e) {
+        alert('Error: ' + e);
+      }
+    }
+
     async function launchAnalyticsPipeline() {
       const btn = document.getElementById('btn-launch-pipeline');
       const banner = document.getElementById('dag-live-banner');
       const title = document.getElementById('dag-live-title');
       const detail = document.getElementById('dag-live-detail');
       const badge = document.getElementById('dag-live-badge');
+      const cancelBtn = document.getElementById('btn-cancel-dag');
 
       btn.disabled = true;
       btn.classList.add('opacity-50');
       banner.classList.remove('hidden');
+      if (cancelBtn) cancelBtn.classList.remove('hidden');
       title.innerText = '🚀 Launching Analytics Pipeline...';
       badge.innerText = 'DISPATCHING';
       badge.className = 'px-2 py-0.5 text-[10px] font-semibold rounded bg-sky-500/20 text-sky-400 border border-sky-500/30';
@@ -1747,6 +1877,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         });
         const data = await res.json();
         if (res.ok) {
+          currentRunningDagId = data.dag_id;
           title.innerText = `⏳ Pipeline Executing (${data.dag_id})`;
           badge.innerText = 'RUNNING';
           detail.innerText = 'Agents executing topological steps with strict capability fencing & verification gates...';
@@ -1756,15 +1887,21 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             const d = await r.json();
             loadDAGRuns();
             loadTasks();
-            if (d.state === 'Succeeded' || d.state === 'Failed') {
+            if (d.state === 'Succeeded' || d.state === 'Failed' || d.state === 'Cancelled') {
               clearInterval(pollInterval);
               btn.disabled = false;
               btn.classList.remove('opacity-50');
+              if (cancelBtn) cancelBtn.classList.add('hidden');
               if (d.state === 'Succeeded') {
                 title.innerText = `✓ Pipeline Succeeded (${data.dag_id})`;
                 badge.innerText = 'SUCCEEDED';
                 badge.className = 'px-2 py-0.5 text-[10px] font-semibold rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30';
                 detail.innerText = 'All 3 agents successfully completed and verified their pipeline steps!';
+              } else if (d.state === 'Cancelled') {
+                title.innerText = `⏹ Pipeline Cancelled (${data.dag_id})`;
+                badge.innerText = 'CANCELLED';
+                badge.className = 'px-2 py-0.5 text-[10px] font-semibold rounded bg-amber-500/20 text-amber-400 border border-amber-500/30';
+                detail.innerText = 'Pipeline was stopped by operator. Active steps drained.';
               } else {
                 title.innerText = `❌ Pipeline Failed (${data.dag_id})`;
                 badge.innerText = 'FAILED';
@@ -1810,6 +1947,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         container.innerHTML = detailedRuns.map(dag => {
           const stateBadge = dag.state === 'Succeeded' ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' :
                              dag.state === 'Failed' ? 'bg-rose-500/20 text-rose-400 border-rose-500/30' :
+                             dag.state === 'Cancelled' ? 'bg-amber-500/20 text-amber-400 border-amber-500/30' :
                              'bg-sky-500/20 text-sky-400 border-sky-500/30 animate-pulse';
           const steps = dag.steps || [];
           const completedCount = steps.filter(s => s.state === 'Succeeded').length;
@@ -1849,6 +1987,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                   const sBadge = st.state === 'Succeeded' ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' :
                                  st.state === 'Running' ? 'bg-sky-500/20 text-sky-400 border-sky-500/30 animate-pulse' :
                                  st.state === 'Failed' ? 'bg-rose-500/20 text-rose-400 border-rose-500/30' :
+                                 st.state === 'Cancelled' ? 'bg-amber-500/20 text-amber-400 border-amber-500/30' :
                                  st.state === 'Skipped' ? 'bg-slate-800 text-slate-500 border-slate-700' :
                                  'bg-slate-800/60 text-slate-400 border-slate-700';
                   const domainIcon = st.domain === 'data' ? '📊' : st.domain === 'code' ? '💻' : st.domain === '3d' ? '🧊' : '📝';

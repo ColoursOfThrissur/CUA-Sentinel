@@ -23,6 +23,7 @@ class DAGState(str, Enum):
     RUNNING = "Running"
     SUCCEEDED = "Succeeded"
     FAILED = "Failed"
+    CANCELLED = "Cancelled"
 
 
 class DAGStepState(str, Enum):
@@ -31,6 +32,7 @@ class DAGStepState(str, Enum):
     SUCCEEDED = "Succeeded"
     FAILED = "Failed"
     SKIPPED = "Skipped"
+    CANCELLED = "Cancelled"
 
 
 class DAGValidationError(Exception):
@@ -246,6 +248,10 @@ class DAGOrchestrator:
         if not dag:
             raise ValueError(f"DAG '{dag_id}' not found.")
 
+        if dag.get("state") in (DAGState.CANCELLED.value, DAGState.FAILED.value, DAGState.SUCCEEDED.value):
+            logger.info("DAG '%s' is in terminal state '%s'; skipping execution.", dag_id, dag.get("state"))
+            return dag
+
         steps_dict = {s["step_id"]: s for s in dag["steps"]}
         step_defs = [
             DAGStepDefinition(
@@ -265,6 +271,13 @@ class DAGOrchestrator:
         has_failure = False
 
         for step_id in order:
+            # Check if entire DAG was cancelled asynchronously
+            current_dag = self.get_dag(dag_id)
+            if current_dag and current_dag.get("state") == DAGState.CANCELLED.value:
+                logger.info("DAG '%s' was cancelled; aborting remaining steps.", dag_id)
+                has_failure = True
+                break
+
             step = steps_dict[step_id]
             deps = step["dependencies"]
 
@@ -334,9 +347,33 @@ class DAGOrchestrator:
                 )
                 steps_dict[step_id]["state"] = DAGStepState.FAILED.value
 
-        final_state = DAGState.FAILED if has_failure else DAGState.SUCCEEDED
-        self.update_dag_state(dag_id, final_state)
-        logger.info("DAG run '%s' completed with final state: %s", dag_id, final_state.value)
+        curr = self.get_dag(dag_id)
+        if curr and curr.get("state") != DAGState.CANCELLED.value:
+            final_state = DAGState.FAILED if has_failure else DAGState.SUCCEEDED
+            self.update_dag_state(dag_id, final_state)
+            logger.info("DAG run '%s' completed with final state: %s", dag_id, final_state.value)
+        return self.get_dag(dag_id)  # type: ignore
+
+    def cancel_dag(self, dag_id: str, reason: str = "Operator cancelled DAG") -> dict[str, Any]:
+        """Cancels a running or pending DAG and all uncompleted steps."""
+        now = time.time()
+        with self.db.transaction() as c:
+            c.execute("SELECT state FROM dag_runs WHERE id = ?", (dag_id,))
+            row = c.fetchone()
+            if not row:
+                raise ValueError(f"DAG '{dag_id}' not found.")
+            if row["state"] in (DAGState.SUCCEEDED.value, DAGState.FAILED.value, DAGState.CANCELLED.value):
+                return self.get_dag(dag_id)  # type: ignore
+
+            c.execute(
+                "UPDATE dag_steps SET state = 'Cancelled', error = ?, updated_at = ? WHERE dag_id = ? AND state IN ('Pending', 'Running')",
+                (reason, now, dag_id),
+            )
+            c.execute(
+                "UPDATE dag_runs SET state = 'Cancelled', error = ?, updated_at = ? WHERE id = ?",
+                (reason, now, dag_id),
+            )
+        logger.info("DAG '%s' cancelled: %s", dag_id, reason)
         return self.get_dag(dag_id)  # type: ignore
 
     @classmethod
