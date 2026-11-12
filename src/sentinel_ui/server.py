@@ -977,9 +977,9 @@ def dispatch_task(req: TaskDispatchRequest):
     effective_agent = req.agent_id
     domain = None
     if effective_agent and effective_agent != "auto":
-        ag_rec = agent_registry.get(effective_agent)
-        if ag_rec and ag_rec.manifest and ag_rec.manifest.capabilities:
-            cap = ag_rec.manifest.capabilities[0]
+        manifest = agent_registry.get_manifest(effective_agent)
+        if manifest and manifest.capabilities:
+            cap = manifest.capabilities[0]
             if "3d" in cap:
                 domain = "3d"
             elif "data" in cap:

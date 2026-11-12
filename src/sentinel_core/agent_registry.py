@@ -207,6 +207,10 @@ class AgentRegistry:
             return None
         return AgentManifest.from_dict(json.loads(rec["manifest_json"]))
 
+    def get(self, agent_id: str) -> AgentManifest | None:
+        """Alias for get_manifest for dictionary-like access."""
+        return self.get_manifest(agent_id)
+
     def get_release(self, agent_id: str, version: str) -> AgentRelease | None:
         row = self.db.execute_one(
             "SELECT * FROM agent_releases WHERE agent_id = ? AND version = ?",
