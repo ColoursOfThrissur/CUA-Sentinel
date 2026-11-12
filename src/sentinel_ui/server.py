@@ -766,6 +766,7 @@ def execute_domain_step(
 
     # Assemble contextual inputs from upstream pipeline steps if running in a DAG
     pred_context = format_predecessor_artifacts(predecessor_artifacts or {})
+    attempt_history: list[dict[str, Any]] = []
 
     def worker_executor(g: str, attempt_num: int, anti_patterns: str):
         if cancel_evt.is_set():
@@ -797,6 +798,11 @@ def execute_domain_step(
         if domain == "3d":
             logger.info("Executing 3D synthesis via LLM (%s) attempt %d/%d", selected_model, attempt_num, max_attempts)
             rel_skills = skill_bank.find_relevant_skills(goal, domain="3d", limit=3)
+
+            # Reflective Error-Feedback: Provide the previous script and exact compiler/runtime error on retry
+            prev_code = attempt_history[-1]["script"] if attempt_history else None
+            prev_error = attempt_history[-1]["error"] if attempt_history else None
+
             blender_script = synthesize_blender_script(
                 goal=goal,
                 output_obj_path=str(expected_artifact),
@@ -806,15 +812,13 @@ def execute_domain_step(
                 relevant_skills=rel_skills,
                 attempt_num=attempt_num,
                 max_attempts=max_attempts,
+                previous_code=prev_code,
+                error_feedback=prev_error,
             )
             preflight = PreFlightLinter.sanitize(blender_script, domain="3d")
             if preflight.fatal_error:
                 logger.warning("PreFlightLinter fatal error in 3D script (%s) on attempt %d/%d.", preflight.fatal_error, attempt_num, max_attempts)
-                if attempt_num >= max_attempts:
-                    logger.info("Engaging procedural fallback on final attempt exhaustion.")
-                    blender_script = synthesize_procedural_fallback(goal, str(expected_artifact))
-                else:
-                    blender_script = preflight.code
+                blender_script = preflight.code
             else:
                 blender_script = preflight.code
                 if preflight.applied_fixes:
@@ -825,17 +829,15 @@ def execute_domain_step(
                 "output_obj_path": str(expected_artifact),
             })
 
-            # High-Assurance Self-Healing: If Blender execution failed or produced a missing/empty OBJ on terminal attempt
+            # Record attempt outcome to history for reflective debugging on subsequent attempt
             if res.get("exit_code") != 0 or not expected_artifact.exists() or expected_artifact.stat().st_size < 100:
-                logger.warning("Blender execution failed (exit %s) or artifact degenerate on attempt %d/%d.", res.get("exit_code"), attempt_num, max_attempts)
-                if attempt_num >= max_attempts:
-                    logger.info("Engaging procedural fallback on final attempt exhaustion.")
-                    fallback_script = synthesize_procedural_fallback(goal, str(expected_artifact))
-                    res = run_tool_fenced("blender_run_python", {
-                        "script_code": fallback_script,
-                        "output_obj_path": str(expected_artifact),
-                    })
-                    blender_script = fallback_script
+                err_detail = res.get("stderr") or res.get("stdout") or "Exported OBJ file was missing or degenerate (0 vertices)"
+                logger.warning("Blender execution failed (exit %s) or artifact degenerate on attempt %d/%d: %s", res.get("exit_code"), attempt_num, max_attempts, err_detail[:200])
+                attempt_history.append({
+                    "attempt_num": attempt_num,
+                    "script": blender_script,
+                    "error": err_detail,
+                })
 
             return {
                 "tool_result": res,

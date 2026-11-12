@@ -158,26 +158,39 @@ bpy.ops.wm.obj_export(filepath=r"{str(out_obj).replace(chr(92), '/')}")
     assert out_obj.stat().st_size > base_size
 
 
-def test_blender_procedural_fallback_telescope_valid_ast():
+def test_blender_procedural_fallback_never_dummy():
     import ast
     from sentinel_broker.organs.blender_prompts import synthesize_procedural_fallback
-    script = synthesize_procedural_fallback("create a 3d realistic telescope model", "test_telescope.obj")
-    # Must parse without syntax errors
-    tree = ast.parse(script)
-    assert tree is not None
-    assert "Optical_Tube" in script
-    assert "Dew_Shield" in script
-    assert "Tripod_Leg" in script
-    assert "Polished_Brass" in script
-
-
-def test_blender_procedural_fallback_monument_never_dummy():
-    import ast
-    from sentinel_broker.organs.blender_prompts import synthesize_procedural_fallback
-    script = synthesize_procedural_fallback("some completely unknown abstract object", "test_unknown.obj")
+    script = synthesize_procedural_fallback("some unknown abstract object", "test_unknown.obj")
     tree = ast.parse(script)
     assert tree is not None
     assert "Plinth_Base" in script
     assert "Central_Column" in script
     assert "Finial_Crown" in script
+
+
+def test_blender_llm_reflective_error_feedback_prompt():
+    from sentinel_core.llm_gateway import LLMGateway
+    
+    class InspectableGateway(LLMGateway):
+        def __init__(self):
+            super().__init__(endpoint="http://mock:11434")
+            self.last_prompt = ""
+
+        def generate(self, prompt: str, system: str | None = None, model: str | None = None, temperature: float = 0.2, max_tokens: int = 4096) -> str:
+            self.last_prompt = prompt
+            return "```python\nimport bpy\nprint('fixed')\n```"
+
+    gw = InspectableGateway()
+    code = gw.generate_blender_code(
+        goal="create a low poly chair",
+        output_obj_path="chair.obj",
+        previous_code="bpy.context.collection.objects.link(chair)",
+        error_feedback="NameError: name 'chair' is not defined",
+    )
+    assert "NameError: name 'chair' is not defined" in gw.last_prompt
+    assert "PREVIOUS ATTEMPT EXECUTION FAILURE - REFLECTIVE DEBUGGING" in gw.last_prompt
+    assert "bpy.context.collection.objects.link(chair)" in gw.last_prompt
+    assert "print('fixed')" in code
+
 

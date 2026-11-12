@@ -154,8 +154,10 @@ class LLMGateway:
         anti_patterns: str = "",
         model: str | None = None,
         relevant_skills: list[dict] | None = None,
+        previous_code: str | None = None,
+        error_feedback: str | None = None,
     ) -> str:
-        """Generates Blender 4.5 Python (bpy) script using qwen3.5:9b with error-aware self-healing."""
+        """Generates Blender 4.5 Python (bpy) script with reflective error-aware self-healing."""
         escaped_path = output_obj_path.replace("\\", "/")
 
         system_instruction = (
@@ -206,7 +208,22 @@ class LLMGateway:
                 f"You can borrow modeling structure, transform sequences, or naming patterns from them."
             )
 
-        if anti_patterns:
+        if previous_code and error_feedback:
+            prompt_body += (
+                f"\n\n[PREVIOUS ATTEMPT EXECUTION FAILURE - REFLECTIVE DEBUGGING]:\n"
+                f"Your previous script crashed inside Blender with the following error:\n"
+                f"--------------------------------------------------\n"
+                f"{error_feedback}\n"
+                f"--------------------------------------------------\n\n"
+                f"PREVIOUS SCRIPT:\n"
+                f"```python\n{previous_code}\n```\n\n"
+                f"DEBUGGING DIRECTIVE:\n"
+                f"1. Read the error message carefully. Understand why it failed.\n"
+                f"2. Rewrite the code to fix the root cause.\n"
+                f"3. Make sure all variables are defined and objects have real vertices.\n"
+                f"4. Generate a complete, corrected script."
+            )
+        elif anti_patterns:
             prompt_body += (
                 f"\n\n[CRITICAL LESSON FROM PREVIOUS FAILED ATTEMPT]:\n"
                 f"The previous script failed execution with the following error/anti-pattern:\n"
