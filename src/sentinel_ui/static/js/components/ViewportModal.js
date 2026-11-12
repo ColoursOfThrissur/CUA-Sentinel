@@ -124,6 +124,7 @@ export function ViewportModal({ artifactName, onClose }) {
 
       const THREE = await import('https://esm.sh/three@0.160.0');
       const { OBJLoader } = await import('https://esm.sh/three@0.160.0/examples/jsm/loaders/OBJLoader.js');
+      const { MTLLoader } = await import('https://esm.sh/three@0.160.0/examples/jsm/loaders/MTLLoader.js');
       const { OrbitControls } = await import('https://esm.sh/three@0.160.0/examples/jsm/controls/OrbitControls.js');
 
       const width = container.clientWidth || 800;
@@ -163,28 +164,38 @@ export function ViewportModal({ artifactName, onClose }) {
       scene.add(grid);
 
       let currentMesh = null;
-      const loader = new OBJLoader();
 
-      loader.load(
-        url,
-        (obj) => {
-          currentMesh = obj;
-          meshRef.current = obj;
+      const setupLoadedObject = (obj) => {
+        currentMesh = obj;
+        meshRef.current = obj;
 
-          let vCount = 0;
-          let fCount = 0;
+        let vCount = 0;
+        let fCount = 0;
 
-          obj.traverse((child) => {
-            if (child.isMesh && child.geometry) {
-              const g = child.geometry;
-              if (g.attributes.position) {
-                vCount += g.attributes.position.count;
+        obj.traverse((child) => {
+          if (child.isMesh && child.geometry) {
+            const g = child.geometry;
+            if (g.attributes.position) {
+              vCount += g.attributes.position.count;
+            }
+            if (g.index) {
+              fCount += g.index.count / 3;
+            } else if (g.attributes.position) {
+              fCount += g.attributes.position.count / 3;
+            }
+
+            // Tag object name for targeted material editing
+            child.userData.objectName = child.name || child.parent?.name || '';
+
+            // Ensure every mesh has its OWN isolated cloned material instance
+            if (child.material) {
+              if (Array.isArray(child.material)) {
+                child.material = child.material.map((m) => m.clone());
+              } else {
+                child.material = child.material.clone();
               }
-              if (g.index) {
-                fCount += g.index.count / 3;
-              } else if (g.attributes.position) {
-                fCount += g.attributes.position.count / 3;
-              }
+              child.material.wireframe = isWireframe;
+            } else {
               child.material = new THREE.MeshStandardMaterial({
                 color: 0x93c5fd,
                 metalness: 0.3,
@@ -192,33 +203,48 @@ export function ViewportModal({ artifactName, onClose }) {
                 wireframe: isWireframe,
               });
             }
-          });
+          }
+        });
 
-          // Compute Bounding Box, Dimensions & Normalize Scale
-          const box = new THREE.Box3().setFromObject(obj);
-          const center = box.getCenter(new THREE.Vector3());
-          const size = box.getSize(new THREE.Vector3());
+        // Compute Bounding Box, Dimensions & Normalize Scale
+        const box = new THREE.Box3().setFromObject(obj);
+        const center = box.getCenter(new THREE.Vector3());
+        const size = box.getSize(new THREE.Vector3());
 
-          const maxDim = Math.max(size.x, size.y, size.z);
-          const scale = 3.6 / (maxDim || 1);
-          obj.scale.set(scale, scale, scale);
+        const maxDim = Math.max(size.x, size.y, size.z);
+        const scale = 3.6 / (maxDim || 1);
+        obj.scale.set(scale, scale, scale);
 
-          obj.position.x -= center.x * scale;
-          obj.position.y -= center.y * scale;
-          obj.position.z -= center.z * scale;
+        obj.position.x -= center.x * scale;
+        obj.position.y -= center.y * scale;
+        obj.position.z -= center.z * scale;
 
-          scene.add(obj);
+        scene.add(obj);
 
-          setMeshStats({
-            vertices: vCount,
-            faces: Math.floor(fCount),
-            dimensions: `${size.x.toFixed(2)} × ${size.y.toFixed(2)} × ${size.z.toFixed(2)}`,
+        setMeshStats({
+          vertices: vCount,
+          faces: Math.floor(fCount),
+          dimensions: `${size.x.toFixed(2)} × ${size.y.toFixed(2)} × ${size.z.toFixed(2)}`,
+        });
+      };
+
+      // Load with companion MTL file if available, with graceful fallback to plain OBJ
+      const mtlUrl = url.replace(/\.obj(\?.*)?$/i, (match, query) => '.mtl' + (query || ''));
+      const mtlLoader = new MTLLoader();
+      mtlLoader.load(
+        mtlUrl,
+        (materials) => {
+          materials.preload();
+          const loader = new OBJLoader();
+          loader.setMaterials(materials);
+          loader.load(url, setupLoadedObject, undefined, (err) => {
+            console.warn('OBJ load with MTL failed, falling back to standalone OBJ', err);
+            new OBJLoader().load(url, setupLoadedObject);
           });
         },
         undefined,
-        (err) => {
-          console.error('OBJLoader failed', err);
-          setError(`3D Geometry parse error: ${err.message || 'Malformed Wavefront OBJ'}`);
+        () => {
+          new OBJLoader().load(url, setupLoadedObject);
         }
       );
 
@@ -308,6 +334,54 @@ export function ViewportModal({ artifactName, onClose }) {
     if (next) loadSceneObjects();
   };
 
+  // Check if a child mesh matches the targeted object (or all if none selected)
+  const isTargetMesh = (child) => {
+    if (!matObjName || matObjName.trim() === '') return true;
+    const target = matObjName.trim().toLowerCase();
+    const childName = (child.name || '').trim().toLowerCase();
+    const parentName = (child.parent?.name || '').trim().toLowerCase();
+    const userObjName = (child.userData?.objectName || '').trim().toLowerCase();
+    if (childName && (childName === target || childName.includes(target) || target.includes(childName))) return true;
+    if (parentName && (parentName === target || parentName.includes(target) || target.includes(parentName))) return true;
+    if (userObjName && (userObjName === target || userObjName.includes(target) || target.includes(userObjName))) return true;
+    return false;
+  };
+
+  // Sync controls to targeted object's existing material when target changes
+  const handleTargetObjectChange = (selectedName) => {
+    setMatObjName(selectedName);
+    if (!selectedName || !meshRef.current) return;
+
+    const target = selectedName.trim().toLowerCase();
+    let foundMat = null;
+    meshRef.current.traverse((child) => {
+      if (foundMat) return;
+      if (child.isMesh && child.material) {
+        const childName = (child.name || '').trim().toLowerCase();
+        const parentName = (child.parent?.name || '').trim().toLowerCase();
+        const userObjName = (child.userData?.objectName || '').trim().toLowerCase();
+        if (
+          (childName && (childName === target || childName.includes(target) || target.includes(childName))) ||
+          (parentName && (parentName === target || parentName.includes(target) || target.includes(parentName))) ||
+          (userObjName && (userObjName === target || userObjName.includes(target) || target.includes(userObjName)))
+        ) {
+          foundMat = Array.isArray(child.material) ? child.material[0] : child.material;
+        }
+      }
+    });
+
+    if (foundMat && foundMat.color) {
+      const hex = '#' + foundMat.color.getHexString();
+      setMatHexColor(hex);
+      if (typeof foundMat.metalness === 'number') {
+        setMatMetalness(foundMat.metalness);
+      }
+      if (typeof foundMat.roughness === 'number') {
+        setMatRoughness(foundMat.roughness);
+      }
+    }
+  };
+
   // Apply hex color to viewport Three.js mesh in real-time (live preview)
   const applyLiveColor = (hex) => {
     setMatHexColor(hex);
@@ -316,8 +390,18 @@ export function ViewportModal({ artifactName, onClose }) {
     const g = parseInt(hex.slice(3, 5), 16) / 255;
     const b = parseInt(hex.slice(5, 7), 16) / 255;
     meshRef.current.traverse((child) => {
-      if (child.isMesh && child.material) {
-        child.material.color.setRGB(r, g, b);
+      if (child.isMesh && child.material && isTargetMesh(child)) {
+        if (!child.userData.isClonedMat) {
+          child.material = Array.isArray(child.material)
+            ? child.material.map((m) => m.clone())
+            : child.material.clone();
+          child.userData.isClonedMat = true;
+        }
+        if (Array.isArray(child.material)) {
+          child.material.forEach((m) => m.color.setRGB(r, g, b));
+        } else {
+          child.material.color.setRGB(r, g, b);
+        }
       }
     });
   };
@@ -326,7 +410,19 @@ export function ViewportModal({ artifactName, onClose }) {
     setMatMetalness(val);
     if (!meshRef.current) return;
     meshRef.current.traverse((child) => {
-      if (child.isMesh && child.material) child.material.metalness = val;
+      if (child.isMesh && child.material && isTargetMesh(child)) {
+        if (!child.userData.isClonedMat) {
+          child.material = Array.isArray(child.material)
+            ? child.material.map((m) => m.clone())
+            : child.material.clone();
+          child.userData.isClonedMat = true;
+        }
+        if (Array.isArray(child.material)) {
+          child.material.forEach((m) => { m.metalness = val; });
+        } else {
+          child.material.metalness = val;
+        }
+      }
     });
   };
 
@@ -334,7 +430,19 @@ export function ViewportModal({ artifactName, onClose }) {
     setMatRoughness(val);
     if (!meshRef.current) return;
     meshRef.current.traverse((child) => {
-      if (child.isMesh && child.material) child.material.roughness = val;
+      if (child.isMesh && child.material && isTargetMesh(child)) {
+        if (!child.userData.isClonedMat) {
+          child.material = Array.isArray(child.material)
+            ? child.material.map((m) => m.clone())
+            : child.material.clone();
+          child.userData.isClonedMat = true;
+        }
+        if (Array.isArray(child.material)) {
+          child.material.forEach((m) => { m.roughness = val; });
+        } else {
+          child.material.roughness = val;
+        }
+      }
     });
   };
 
@@ -342,12 +450,23 @@ export function ViewportModal({ artifactName, onClose }) {
     setMatEmission(val);
     if (!meshRef.current) return;
     meshRef.current.traverse((child) => {
-      if (child.isMesh && child.material) {
+      if (child.isMesh && child.material && isTargetMesh(child)) {
+        if (!child.userData.isClonedMat) {
+          child.material = Array.isArray(child.material)
+            ? child.material.map((m) => m.clone())
+            : child.material.clone();
+          child.userData.isClonedMat = true;
+        }
         const r2 = parseInt(matHexColor.slice(1, 3), 16) / 255;
         const g2 = parseInt(matHexColor.slice(3, 5), 16) / 255;
         const b2 = parseInt(matHexColor.slice(5, 7), 16) / 255;
-        child.material.emissive = { r: r2 * val, g: g2 * val, b: b2 * val };
-        child.material.emissiveIntensity = val;
+        const mats = Array.isArray(child.material) ? child.material : [child.material];
+        mats.forEach((m) => {
+          if (m.emissive) {
+            m.emissive.setRGB(r2 * val, g2 * val, b2 * val);
+            m.emissiveIntensity = val;
+          }
+        });
       }
     });
   };
@@ -402,7 +521,8 @@ export function ViewportModal({ artifactName, onClose }) {
 
   const reloadViewport = () => {
     if (fileType === 'obj' && cleanName) {
-      startThreeJS(fileUrl);
+      const freshUrl = fileUrl.includes('?') ? `${fileUrl}&_t=${Date.now()}` : `${fileUrl}?_t=${Date.now()}`;
+      startThreeJS(freshUrl);
     }
   };
 
@@ -733,7 +853,7 @@ export function ViewportModal({ artifactName, onClose }) {
                     <div style=${{ color: '#94a3b8', marginBottom: '5px', fontWeight: 600 }}>Target Object</div>
                     <select
                       value=${matObjName}
-                      onChange=${(e) => setMatObjName(e.target.value)}
+                      onChange=${(e) => handleTargetObjectChange(e.target.value)}
                       style=${{ width: '100%', background: '#0f172a', border: '1px solid #334155', color: '#e2e8f0', borderRadius: '5px', padding: '5px 8px', fontSize: '11px' }}
                     >
                       <option value="">All Objects</option>

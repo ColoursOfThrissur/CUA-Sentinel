@@ -124,7 +124,7 @@ def get_workspace_artifact(filename: str):
         ".html": "text/html; charset=utf-8",
     }
     media_type = media_types.get(ext, "application/octet-stream")
-    return FileResponse(path=str(found), media_type=media_type, filename=found.name)
+    return FileResponse(path=str(found), media_type=media_type, filename=found.name, headers={"Cache-Control": "no-cache"})
 
 static_dir = (Path(__file__).parent / "static").resolve()
 static_dir.mkdir(parents=True, exist_ok=True)

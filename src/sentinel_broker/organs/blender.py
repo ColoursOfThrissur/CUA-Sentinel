@@ -179,13 +179,18 @@ bpy.ops.wm.read_factory_settings(use_empty=True)
 # Import OBJ
 bpy.ops.wm.obj_import(filepath=r"{escaped_input}")
 
-target_name = {obj_filter}
+target_name = {obj_filter}.strip().lower()
 
 for obj in bpy.context.scene.objects:
     if obj.type != 'MESH':
         continue
-    if target_name and obj.name != target_name:
+    obj_clean = obj.name.strip().lower()
+    if target_name and obj_clean != target_name and target_name not in obj_clean:
         continue
+
+    # Isolate mesh datablock so material assignment never bleeds across objects
+    if obj.data.users > 1:
+        obj.data = obj.data.copy()
 
     mat = bpy.data.materials.new(name="Sentinel_Mat_" + obj.name)
     mat.use_nodes = True
@@ -277,13 +282,16 @@ import bpy
 bpy.ops.wm.read_factory_settings(use_empty=True)
 bpy.ops.wm.obj_import(filepath=r"{escaped_input}")
 
-target_name = {obj_filter}
+target_name = {obj_filter}.strip().lower()
 
 for obj in bpy.context.scene.objects:
     if obj.type != 'MESH':
         continue
-    if target_name and obj.name != target_name:
+    obj_clean = obj.name.strip().lower()
+    if target_name and obj_clean != target_name and target_name not in obj_clean:
         continue
+    if obj.data.users > 1:
+        obj.data = obj.data.copy()
     bpy.context.view_layer.objects.active = obj
     {MOD_CODE.strip()}
 
