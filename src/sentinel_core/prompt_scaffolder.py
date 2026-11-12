@@ -28,7 +28,7 @@ DOMAIN_GUARDRAILS = {
         "   Example: bsdf.inputs['Base Color'].default_value = (0.8, 0.3, 0.1, 1.0)  # warm orange\n"
         "5. Modifiers: If desired, add and immediately apply modifiers (Bevel, Subdivision, Solidify) before export.\n"
         "   Always call bpy.ops.object.modifier_apply(modifier=mod.name) right after adding a modifier.\n"
-        "6. Geometry: Build multi-primitive geometry with non-zero dimensions using mesh operators.\n"
+        "6. Geometry: Use bpy.ops.mesh.primitive_*_add() which automatically links objects to the scene. DO NOT call bpy.data.objects.new(). Immediately grab obj = bpy.context.active_object.\n"
         "7. Output: Return ONLY executable Python inside a ```python ``` block. No markdown explanation."
     ),
     "code": (
