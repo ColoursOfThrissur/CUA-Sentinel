@@ -15,6 +15,20 @@ export function ViewportModal({ artifactName, onClose }) {
   const [meshStats, setMeshStats] = useState({ vertices: 0, faces: 0, dimensions: '' });
   const [fileSizeBytes, setFileSizeBytes] = useState(0);
 
+  // Material & Modifier Panel state
+  const [showMatPanel, setShowMatPanel] = useState(false);
+  const [matHexColor, setMatHexColor] = useState('#7ec8e3');
+  const [matMetalness, setMatMetalness] = useState(0.1);
+  const [matRoughness, setMatRoughness] = useState(0.4);
+  const [matEmission, setMatEmission] = useState(0.0);
+  const [modifierType, setModifierType] = useState('subdivision');
+  const [modifierStrength, setModifierStrength] = useState(1.0);
+  const [matObjName, setMatObjName] = useState('');
+  const [sceneObjects, setSceneObjects] = useState([]);
+  const [matOpBusy, setMatOpBusy] = useState(false);
+  const [matOpResult, setMatOpResult] = useState(null);
+  const [matOpError, setMatOpError] = useState(null);
+
   const canvasRef = useRef(null);
   const threeCleanupRef = useRef(null);
   const cameraRef = useRef(null);
@@ -257,6 +271,129 @@ export function ViewportModal({ artifactName, onClose }) {
       controlsRef.current.update();
     }
   };
+
+  // ── Material & Modifier Panel helpers ─────────────────────────────────────
+
+  // Fetch the list of objects in the scene when the panel opens
+  const loadSceneObjects = () => {
+    if (!cleanName || fileType !== 'obj') return;
+    fetch('/api/blender/modify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ artifact_obj_path: `G:/Sentinel_Workspace/${cleanName}`, action: 'list_objects' }),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        const objs = data?.result?.objects || [];
+        setSceneObjects(objs);
+      })
+      .catch(() => setSceneObjects([]));
+  };
+
+  const toggleMatPanel = () => {
+    const next = !showMatPanel;
+    setShowMatPanel(next);
+    if (next) loadSceneObjects();
+  };
+
+  // Apply hex color to viewport Three.js mesh in real-time (live preview)
+  const applyLiveColor = (hex) => {
+    setMatHexColor(hex);
+    if (!meshRef.current) return;
+    const r = parseInt(hex.slice(1, 3), 16) / 255;
+    const g = parseInt(hex.slice(3, 5), 16) / 255;
+    const b = parseInt(hex.slice(5, 7), 16) / 255;
+    meshRef.current.traverse((child) => {
+      if (child.isMesh && child.material) {
+        child.material.color.setRGB(r, g, b);
+      }
+    });
+  };
+
+  const applyLiveMetalness = (val) => {
+    setMatMetalness(val);
+    if (!meshRef.current) return;
+    meshRef.current.traverse((child) => {
+      if (child.isMesh && child.material) child.material.metalness = val;
+    });
+  };
+
+  const applyLiveRoughness = (val) => {
+    setMatRoughness(val);
+    if (!meshRef.current) return;
+    meshRef.current.traverse((child) => {
+      if (child.isMesh && child.material) child.material.roughness = val;
+    });
+  };
+
+  const applyLiveEmission = (val) => {
+    setMatEmission(val);
+    if (!meshRef.current) return;
+    meshRef.current.traverse((child) => {
+      if (child.isMesh && child.material) {
+        const r2 = parseInt(matHexColor.slice(1, 3), 16) / 255;
+        const g2 = parseInt(matHexColor.slice(3, 5), 16) / 255;
+        const b2 = parseInt(matHexColor.slice(5, 7), 16) / 255;
+        child.material.emissive = { r: r2 * val, g: g2 * val, b: b2 * val };
+        child.material.emissiveIntensity = val;
+      }
+    });
+  };
+
+  const callBlenderModify = (action, extraParams = {}) => {
+    if (!cleanName || fileType !== 'obj') return;
+    setMatOpBusy(true);
+    setMatOpResult(null);
+    setMatOpError(null);
+
+    const body = {
+      artifact_obj_path: `G:/Sentinel_Workspace/${cleanName}`,
+      action,
+      hex_color: matHexColor,
+      metalness: matMetalness,
+      roughness: matRoughness,
+      emission_strength: matEmission,
+      modifier_type: modifierType,
+      strength: modifierStrength,
+      object_name: matObjName,
+      ...extraParams,
+    };
+
+    fetch('/api/blender/modify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.error) {
+          setMatOpError(data.error);
+        } else {
+          const exitCode = data?.result?.exit_code;
+          const ok = exitCode === 0;
+          setMatOpResult(ok
+            ? `✓ ${action === 'set_color' ? 'Color applied' : action === 'add_modifier' ? `Modifier '${modifierType}' applied` : 'Done'} in ${data?.result?.duration_sec ?? '?'}s — reload viewport to see`
+            : `Blender exit ${exitCode}: ${(data?.result?.stderr || '').slice(0, 200)}`
+          );
+          if (!ok) setMatOpError(`Exit code ${exitCode}`);
+        }
+        setMatOpBusy(false);
+        // Refresh scene object list
+        loadSceneObjects();
+      })
+      .catch((e) => {
+        setMatOpError(e.message || 'Network error');
+        setMatOpBusy(false);
+      });
+  };
+
+  const reloadViewport = () => {
+    if (fileType === 'obj' && cleanName) {
+      startThreeJS(fileUrl);
+    }
+  };
+
+  // ── end Material & Modifier Panel helpers ─────────────────────────────────
 
   const copyToClipboard = () => {
     navigator.clipboard.writeText(content);
@@ -511,33 +648,267 @@ export function ViewportModal({ artifactName, onClose }) {
 
           <!-- 1. 3D OBJ Viewport -->
           ${fileType === 'obj' && !loading && !error && html`
-            <div className="viewport-3d-container" style=${{ flex: 1, minHeight: '520px' }}>
-              <div ref=${canvasRef} className="viewport-3d-canvas"></div>
-              
-              <div className="viewport-3d-controls">
-                <button
-                  className=${isWireframe ? 'active' : ''}
-                  onClick=${toggleWireframe}
-                  title="Toggle wireframe rendering mode"
-                >
-                  ${isWireframe ? 'Solid' : 'Wireframe'}
-                </button>
-                <button
-                  className=${autoRotate ? 'active' : ''}
-                  onClick=${() => setAutoRotate(!autoRotate)}
-                  title="Toggle continuous turntable rotation"
-                >
-                  ${autoRotate ? 'Pause Rotation' : 'Auto Rotate'}
-                </button>
-                <button onClick=${resetCamera} title="Reset camera position">
-                  Reset View
-                </button>
+            <div style=${{ display: 'flex', flex: 1, gap: '12px', minHeight: '520px' }}>
+
+              <!-- Canvas area -->
+              <div className="viewport-3d-container" style=${{ flex: 1, minHeight: '520px', position: 'relative' }}>
+                <div ref=${canvasRef} className="viewport-3d-canvas"></div>
+                
+                <div className="viewport-3d-controls">
+                  <button
+                    className=${isWireframe ? 'active' : ''}
+                    onClick=${toggleWireframe}
+                    title="Toggle wireframe rendering mode"
+                  >
+                    ${isWireframe ? 'Solid' : 'Wireframe'}
+                  </button>
+                  <button
+                    className=${autoRotate ? 'active' : ''}
+                    onClick=${() => setAutoRotate(!autoRotate)}
+                    title="Toggle continuous turntable rotation"
+                  >
+                    ${autoRotate ? 'Pause Rotation' : 'Auto Rotate'}
+                  </button>
+                  <button onClick=${resetCamera} title="Reset camera position">
+                    Reset View
+                  </button>
+                  <button
+                    className=${showMatPanel ? 'active' : ''}
+                    onClick=${toggleMatPanel}
+                    title="Open Material & Modifier panel"
+                    style=${{ background: showMatPanel ? 'rgba(168,85,247,0.25)' : '', borderColor: showMatPanel ? '#a855f7' : '' }}
+                  >
+                    🎨 Materials
+                  </button>
+                </div>
+
+                <div className="viewport-3d-hint">
+                  Left click to orbit · Scroll to zoom · Right click to pan
+                  ${meshStats.dimensions ? ` · Bounding Box: ${meshStats.dimensions}` : ''}
+                </div>
               </div>
 
-              <div className="viewport-3d-hint">
-                Left click to orbit · Scroll to zoom · Right click to pan
-                ${meshStats.dimensions ? ` · Bounding Box: ${meshStats.dimensions}` : ''}
-              </div>
+              <!-- Material & Modifier Panel -->
+              ${showMatPanel && html`
+                <div style=${{
+                  width: '260px',
+                  flexShrink: 0,
+                  background: 'rgba(10,14,23,0.95)',
+                  border: '1px solid rgba(168,85,247,0.3)',
+                  borderRadius: '10px',
+                  padding: '14px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '14px',
+                  overflowY: 'auto',
+                  fontSize: '12px',
+                }}>
+
+                  <!-- Panel Title -->
+                  <div style=${{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span style=${{ fontWeight: 700, color: '#a855f7', fontSize: '13px', letterSpacing: '0.03em' }}>
+                      🎨 Material & Modifiers
+                    </span>
+                    <button
+                      onClick=${() => setShowMatPanel(false)}
+                      style=${{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: '14px' }}
+                    >✕</button>
+                  </div>
+
+                  <!-- Object Selector -->
+                  <div>
+                    <div style=${{ color: '#94a3b8', marginBottom: '5px', fontWeight: 600 }}>Target Object</div>
+                    <select
+                      value=${matObjName}
+                      onChange=${(e) => setMatObjName(e.target.value)}
+                      style=${{ width: '100%', background: '#0f172a', border: '1px solid #334155', color: '#e2e8f0', borderRadius: '5px', padding: '5px 8px', fontSize: '11px' }}
+                    >
+                      <option value="">All Objects</option>
+                      ${sceneObjects.map((o, i) => html`
+                        <option key=${i} value=${o.name}>${o.name} (${o.vertices}v)</option>
+                      `)}
+                    </select>
+                    ${sceneObjects.length === 0 && html`
+                      <div style=${{ fontSize: '10px', color: '#64748b', marginTop: '4px' }}>Loading objects...</div>
+                    `}
+                  </div>
+
+                  <!-- Divider -->
+                  <div style=${{ borderTop: '1px solid #1e293b' }}></div>
+
+                  <!-- BASE COLOR -->
+                  <div>
+                    <div style=${{ color: '#94a3b8', marginBottom: '8px', fontWeight: 600 }}>Base Color</div>
+                    <div style=${{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <input
+                        type="color"
+                        value=${matHexColor}
+                        onInput=${(e) => applyLiveColor(e.target.value)}
+                        onChange=${(e) => applyLiveColor(e.target.value)}
+                        style=${{ width: '48px', height: '36px', border: 'none', borderRadius: '5px', cursor: 'pointer', background: 'none' }}
+                      />
+                      <input
+                        type="text"
+                        value=${matHexColor}
+                        onInput=${(e) => { if (/^#[0-9a-fA-F]{6}$/.test(e.target.value)) applyLiveColor(e.target.value); }}
+                        style=${{ flex: 1, background: '#0f172a', border: '1px solid #334155', color: '#e2e8f0', borderRadius: '5px', padding: '5px 8px', fontSize: '11px', fontFamily: 'monospace' }}
+                      />
+                    </div>
+                    <!-- Swatches -->
+                    <div style=${{ display: 'flex', gap: '5px', marginTop: '8px', flexWrap: 'wrap' }}>
+                      ${['#7ec8e3','#f97316','#a855f7','#22c55e','#ef4444','#eab308','#e2e8f0','#1e293b','#b45309','#0ea5e9'].map((c, i) => html`
+                        <div
+                          key=${i}
+                          onClick=${() => applyLiveColor(c)}
+                          title=${c}
+                          style=${{
+                            width: '18px', height: '18px', borderRadius: '4px', background: c, cursor: 'pointer',
+                            border: matHexColor === c ? '2px solid #fff' : '1px solid rgba(255,255,255,0.15)',
+                            flexShrink: 0,
+                          }}
+                        ></div>
+                      `)}
+                    </div>
+                  </div>
+
+                  <!-- Metalness -->
+                  <div>
+                    <div style=${{ display: 'flex', justifyContent: 'space-between', color: '#94a3b8', marginBottom: '5px', fontWeight: 600 }}>
+                      <span>Metalness</span>
+                      <span style=${{ color: '#a855f7' }}>${matMetalness.toFixed(2)}</span>
+                    </div>
+                    <input type="range" min="0" max="1" step="0.01"
+                      value=${matMetalness}
+                      onInput=${(e) => applyLiveMetalness(parseFloat(e.target.value))}
+                      style=${{ width: '100%', accentColor: '#a855f7' }}
+                    />
+                  </div>
+
+                  <!-- Roughness -->
+                  <div>
+                    <div style=${{ display: 'flex', justifyContent: 'space-between', color: '#94a3b8', marginBottom: '5px', fontWeight: 600 }}>
+                      <span>Roughness</span>
+                      <span style=${{ color: '#a855f7' }}>${matRoughness.toFixed(2)}</span>
+                    </div>
+                    <input type="range" min="0" max="1" step="0.01"
+                      value=${matRoughness}
+                      onInput=${(e) => applyLiveRoughness(parseFloat(e.target.value))}
+                      style=${{ width: '100%', accentColor: '#a855f7' }}
+                    />
+                  </div>
+
+                  <!-- Emission -->
+                  <div>
+                    <div style=${{ display: 'flex', justifyContent: 'space-between', color: '#94a3b8', marginBottom: '5px', fontWeight: 600 }}>
+                      <span>Emission</span>
+                      <span style=${{ color: '#a855f7' }}>${matEmission.toFixed(2)}</span>
+                    </div>
+                    <input type="range" min="0" max="5" step="0.1"
+                      value=${matEmission}
+                      onInput=${(e) => applyLiveEmission(parseFloat(e.target.value))}
+                      style=${{ width: '100%', accentColor: '#a855f7' }}
+                    />
+                  </div>
+
+                  <!-- Apply Color Button -->
+                  <button
+                    onClick=${() => callBlenderModify('set_color')}
+                    disabled=${matOpBusy}
+                    style=${{
+                      width: '100%', padding: '8px', borderRadius: '7px', border: 'none', cursor: matOpBusy ? 'not-allowed' : 'pointer',
+                      background: matOpBusy ? '#1e293b' : 'linear-gradient(135deg, #7c3aed, #a855f7)',
+                      color: '#fff', fontWeight: 700, fontSize: '12px',
+                    }}
+                  >
+                    ${matOpBusy ? '⏳ Applying…' : '🎨 Bake Color to File'}
+                  </button>
+
+                  <!-- Divider -->
+                  <div style=${{ borderTop: '1px solid #1e293b' }}></div>
+
+                  <!-- MODIFIER SECTION -->
+                  <div>
+                    <div style=${{ color: '#94a3b8', marginBottom: '8px', fontWeight: 600 }}>Modifier</div>
+                    <select
+                      value=${modifierType}
+                      onChange=${(e) => setModifierType(e.target.value)}
+                      style=${{ width: '100%', background: '#0f172a', border: '1px solid #334155', color: '#e2e8f0', borderRadius: '5px', padding: '5px 8px', fontSize: '11px', marginBottom: '8px' }}
+                    >
+                      <option value="subdivision">Subdivision Surface</option>
+                      <option value="bevel">Bevel Edges</option>
+                      <option value="solidify">Solidify Shell</option>
+                      <option value="wireframe">Wireframe Cage</option>
+                      <option value="decimate">Decimate (Reduce Poly)</option>
+                      <option value="displace">Displace (Noise Bump)</option>
+                    </select>
+                    <div style=${{ display: 'flex', justifyContent: 'space-between', color: '#94a3b8', marginBottom: '5px' }}>
+                      <span>${modifierType === 'decimate' ? 'Ratio' : modifierType === 'subdivision' ? 'Levels' : 'Strength'}</span>
+                      <span style=${{ color: '#38bdf8' }}>${modifierStrength.toFixed(2)}</span>
+                    </div>
+                    <input type="range"
+                      min=${modifierType === 'decimate' ? '0.05' : modifierType === 'subdivision' ? '1' : '0.01'}
+                      max=${modifierType === 'subdivision' ? '4' : modifierType === 'decimate' ? '1' : '2'}
+                      step=${modifierType === 'subdivision' ? '1' : '0.01'}
+                      value=${modifierStrength}
+                      onInput=${(e) => setModifierStrength(parseFloat(e.target.value))}
+                      style=${{ width: '100%', accentColor: '#38bdf8' }}
+                    />
+                  </div>
+
+                  <!-- Apply Modifier Button -->
+                  <button
+                    onClick=${() => callBlenderModify('add_modifier')}
+                    disabled=${matOpBusy}
+                    style=${{
+                      width: '100%', padding: '8px', borderRadius: '7px', border: 'none', cursor: matOpBusy ? 'not-allowed' : 'pointer',
+                      background: matOpBusy ? '#1e293b' : 'linear-gradient(135deg, #0369a1, #38bdf8)',
+                      color: '#fff', fontWeight: 700, fontSize: '12px',
+                    }}
+                  >
+                    ${matOpBusy ? '⏳ Applying…' : '⚙️ Apply Modifier to File'}
+                  </button>
+
+                  <!-- Reload Button -->
+                  <button
+                    onClick=${reloadViewport}
+                    style=${{
+                      width: '100%', padding: '7px', borderRadius: '7px', border: '1px solid #334155', cursor: 'pointer',
+                      background: '#0f172a', color: '#94a3b8', fontWeight: 600, fontSize: '11px',
+                    }}
+                  >
+                    🔄 Reload 3D Viewport
+                  </button>
+
+                  <!-- Op Result -->
+                  ${matOpResult && html`
+                    <div style=${{ background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.3)', borderRadius: '6px', padding: '8px', color: '#86efac', fontSize: '11px', lineHeight: '1.5' }}>
+                      ${matOpResult}
+                    </div>
+                  `}
+                  ${matOpError && html`
+                    <div style=${{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '6px', padding: '8px', color: '#fca5a5', fontSize: '11px' }}>
+                      ⚠️ ${matOpError}
+                    </div>
+                  `}
+
+                  <!-- Scene Objects Summary -->
+                  ${sceneObjects.length > 0 && html`
+                    <div>
+                      <div style=${{ color: '#64748b', marginBottom: '5px', fontSize: '10px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+                        Scene Objects (${sceneObjects.length})
+                      </div>
+                      ${sceneObjects.map((o, i) => html`
+                        <div key=${i} style=${{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', borderBottom: '1px solid #0f172a', fontSize: '10px' }}>
+                          <span style=${{ color: '#e2e8f0', fontFamily: 'monospace' }}>${o.name}</span>
+                          <span style=${{ color: '#64748b' }}>${o.vertices}v · ${o.faces}f</span>
+                        </div>
+                      `)}
+                    </div>
+                  `}
+
+                </div>
+              `}
+
             </div>
           `}
 

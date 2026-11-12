@@ -158,7 +158,18 @@ class LLMGateway:
             "   - bpy.ops.mesh.primitive_uv_sphere_add(radius=..., location=...)\n"
             "   - bpy.ops.mesh.primitive_torus_add(major_radius=..., minor_radius=..., location=...)\n"
             "   - bpy.ops.mesh.primitive_cone_add(radius1=..., depth=..., location=...)\n"
-            "4. End the script with exporting the scene to OBJ:\n"
+            "4. ALWAYS assign a Principled BSDF material with a thematic base color to each object:\n"
+            "   mat = bpy.data.materials.new(name='MyMat')\n"
+            "   mat.use_nodes = True\n"
+            "   bsdf = mat.node_tree.nodes.get('Principled BSDF')\n"
+            "   bsdf.inputs['Base Color'].default_value = (R, G, B, 1.0)  # floats 0-1\n"
+            "   bsdf.inputs['Metallic'].default_value = 0.0  # 0=plastic, 1=metal\n"
+            "   bsdf.inputs['Roughness'].default_value = 0.5\n"
+            "   obj.data.materials.append(mat)\n"
+            "5. For interesting results, optionally add modifiers BEFORE the export (apply them first):\n"
+            "   mod = obj.modifiers.new(name='Bevel', type='BEVEL'); mod.width=0.05; mod.segments=2\n"
+            "   bpy.context.view_layer.objects.active = obj; bpy.ops.object.modifier_apply(modifier='Bevel')\n"
+            "6. End the script with exporting the scene to OBJ:\n"
             f'   bpy.ops.wm.obj_export(filepath=r"{escaped_path}")\n'
             '   print("SENTINEL_3D_MODEL_EXPORTED_OK")\n'
         )

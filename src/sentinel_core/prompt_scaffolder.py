@@ -24,8 +24,12 @@ DOMAIN_GUARDRAILS = {
         "2. Export: Blender 4.0+ uses bpy.ops.wm.obj_export(filepath=r'...') - DO NOT use bpy.ops.export_scene.obj.\n"
         "3. Materials: Principled BSDF in Blender 4.0+ renamed inputs. DO NOT access .inputs['Specular'] as a float. "
         "Use inputs['Roughness'].default_value and inputs['Base Color'].default_value.\n"
-        "4. Geometry: Build multi-primitive geometry with non-zero dimensions using mesh operators (cylinder, cube, sphere, torus).\n"
-        "5. Output: Return ONLY executable Python inside a ```python ``` block. No markdown explanation."
+        "4. Colors: ALWAYS assign a Principled BSDF material with a logical, thematic base color to each mesh object.\n"
+        "   Example: bsdf.inputs['Base Color'].default_value = (0.8, 0.3, 0.1, 1.0)  # warm orange\n"
+        "5. Modifiers: If desired, add and immediately apply modifiers (Bevel, Subdivision, Solidify) before export.\n"
+        "   Always call bpy.ops.object.modifier_apply(modifier=mod.name) right after adding a modifier.\n"
+        "6. Geometry: Build multi-primitive geometry with non-zero dimensions using mesh operators.\n"
+        "7. Output: Return ONLY executable Python inside a ```python ``` block. No markdown explanation."
     ),
     "code": (
         "PYTHON ALGORITHM & CODE CONTRACT:\n"

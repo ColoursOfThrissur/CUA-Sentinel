@@ -186,7 +186,7 @@ def init_standard_agents():
             description="Synthesizes procedural 3D meshes, shaders, and animations in Blender 4.5 LTS.",
             author="Sentinel Biological Systems",
             capabilities=["3d:mesh", "3d:bpy", "3d:render", "skill:compose"],
-            allowed_organs=["blender_run_python", "blender_launch_gui", "execute_skill", "skill_*"],
+            allowed_organs=["blender_run_python", "blender_launch_gui", "blender_set_material_color", "blender_add_modifier", "blender_apply_modifiers", "blender_list_scene_objects", "execute_skill", "skill_*"],
         ),
         AgentManifest(
             agent_id="data_analyst",
@@ -593,6 +593,89 @@ def api_deprecate_agent(req: AgentActionRequest):
 def list_side_effects():
     rows = db.execute_read("SELECT * FROM side_effect_ledger ORDER BY id DESC LIMIT 50")
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Blender Material & Modifier API  (v0.3.1)
+# ---------------------------------------------------------------------------
+
+class BlenderModifyRequest(BaseModel):
+    artifact_obj_path: str
+    action: str  # 'set_color' | 'add_modifier' | 'apply_modifiers' | 'list_objects'
+    # set_color params
+    hex_color: str = "#7ec8e3"
+    metalness: float = 0.1
+    roughness: float = 0.4
+    emission_strength: float = 0.0
+    # add_modifier params
+    modifier_type: str = "subdivision"
+    strength: float = 1.0
+    # common
+    object_name: str = ""
+    output_obj_path: str = ""
+    timeout_sec: float = 90.0
+
+
+@app.post("/api/blender/modify")
+def blender_modify(req: BlenderModifyRequest):
+    """Apply material colors or modifiers to an existing OBJ artifact via Blender headless."""
+    action = req.action.lower()
+    output_path = req.output_obj_path or req.artifact_obj_path
+
+    if action == "list_objects":
+        result = tool_registry.execute_tool("blender_list_scene_objects", {
+            "artifact_obj_path": req.artifact_obj_path,
+        })
+        return {"action": "list_objects", "result": result}
+
+    elif action == "set_color":
+        result = tool_registry.execute_tool("blender_set_material_color", {
+            "artifact_obj_path": req.artifact_obj_path,
+            "hex_color": req.hex_color,
+            "metalness": req.metalness,
+            "roughness": req.roughness,
+            "emission_strength": req.emission_strength,
+            "object_name": req.object_name,
+            "output_obj_path": output_path,
+            "timeout_sec": req.timeout_sec,
+        })
+        return {
+            "action": "set_color",
+            "hex_color": req.hex_color,
+            "artifact_obj_path": output_path,
+            "result": result,
+        }
+
+    elif action == "add_modifier":
+        result = tool_registry.execute_tool("blender_add_modifier", {
+            "artifact_obj_path": req.artifact_obj_path,
+            "modifier_type": req.modifier_type,
+            "strength": req.strength,
+            "object_name": req.object_name,
+            "output_obj_path": output_path,
+            "timeout_sec": req.timeout_sec,
+        })
+        return {
+            "action": "add_modifier",
+            "modifier_type": req.modifier_type,
+            "artifact_obj_path": output_path,
+            "result": result,
+        }
+
+    elif action == "apply_modifiers":
+        result = tool_registry.execute_tool("blender_apply_modifiers", {
+            "artifact_obj_path": req.artifact_obj_path,
+            "output_obj_path": output_path,
+            "timeout_sec": req.timeout_sec,
+        })
+        return {
+            "action": "apply_modifiers",
+            "artifact_obj_path": output_path,
+            "result": result,
+        }
+
+    else:
+        return {"error": f"Unknown action '{action}'. Use: set_color | add_modifier | apply_modifiers | list_objects"}
 
 
 def execute_domain_step(
