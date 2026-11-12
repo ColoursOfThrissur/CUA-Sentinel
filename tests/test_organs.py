@@ -41,6 +41,24 @@ def test_windows_command_motor_organ(organs_registry):
     })
     assert res["exit_code"] == 0
     assert "SENTINEL_MOTOR_OK" in res["stdout"]
+    assert res.get("sandboxed") is True
+
+
+def test_windows_command_blocks_destructive_commands(organs_registry):
+    # Attempt destructive deletion without allow_irreversible
+    res = organs_registry.execute_tool("windows_command", {
+        "command": "rmdir /s /q C:\\Windows",
+        "shell": "cmd",
+    })
+    assert res["exit_code"] == 1
+    assert "Destructive system operation blocked" in res["error"]
+
+    res_ps = organs_registry.execute_tool("windows_command", {
+        "command": "Remove-Item -Recurse -Force C:\\test",
+        "shell": "powershell",
+    })
+    assert res_ps["exit_code"] == 1
+    assert "Destructive system operation blocked" in res_ps["error"]
 
 
 def test_mouse_motor_organ(organs_registry):

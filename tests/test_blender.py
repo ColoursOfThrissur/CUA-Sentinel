@@ -156,3 +156,28 @@ bpy.ops.wm.obj_export(filepath=r"{str(out_obj).replace(chr(92), '/')}")
     assert res_mod["exit_code"] == 0, f"stderr: {res_mod.get('stderr', '')}"
     # Subdivided mesh should have more data than base cube
     assert out_obj.stat().st_size > base_size
+
+
+def test_blender_procedural_fallback_telescope_valid_ast():
+    import ast
+    from sentinel_broker.organs.blender_prompts import synthesize_procedural_fallback
+    script = synthesize_procedural_fallback("create a 3d realistic telescope model", "test_telescope.obj")
+    # Must parse without syntax errors
+    tree = ast.parse(script)
+    assert tree is not None
+    assert "Optical_Tube" in script
+    assert "Dew_Shield" in script
+    assert "Tripod_Leg" in script
+    assert "Polished_Brass" in script
+
+
+def test_blender_procedural_fallback_monument_never_dummy():
+    import ast
+    from sentinel_broker.organs.blender_prompts import synthesize_procedural_fallback
+    script = synthesize_procedural_fallback("some completely unknown abstract object", "test_unknown.obj")
+    tree = ast.parse(script)
+    assert tree is not None
+    assert "Plinth_Base" in script
+    assert "Central_Column" in script
+    assert "Finial_Crown" in script
+

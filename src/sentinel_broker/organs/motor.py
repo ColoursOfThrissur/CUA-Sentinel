@@ -5,12 +5,16 @@ from __future__ import annotations
 
 import ctypes
 from ctypes import wintypes
+import logging
+import re
 import subprocess
 import time
 from typing import Any
 
 from sentinel_core.side_effects import EffectClass
 from sentinel_broker.tool_registry import ToolRegistry
+
+logger = logging.getLogger("SentinelMotorOrgan")
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 
@@ -111,7 +115,7 @@ def register_motor_organs(registry: ToolRegistry):
 
     @registry.register(
         name="windows_command",
-        description="Executes a Windows PowerShell or CMD command on the host outside the sandbox.",
+        description="Executes a Windows PowerShell or CMD command under Win32 Job Object resource containment and safety guards.",
         effect_class=EffectClass.NON_IDEMPOTENT_WRITE,
         parameters_schema={
             "command": "str (PowerShell or CMD command)",
@@ -124,15 +128,78 @@ def register_motor_organs(registry: ToolRegistry):
         shell = params.get("shell", "powershell").lower()
         timeout = float(params.get("timeout_sec", 30.0))
 
+        # 1. High-Assurance Destructive Command Guard
+        dangerous_patterns = [
+            r"\brmdir\s+/[sq]",
+            r"\bdel\s+/[fsq]",
+            r"\bformat\s+[a-zA-Z]:",
+            r"\bRemove-Item\b.*-(?:Recurse|Force).*[Cc]:",
+            r"\bdiskpart\b",
+            r"\bbcdedit\b",
+            r"\bshutdown\b",
+            r"\breg\s+delete\b",
+            r"\bClear-Disk\b",
+            r"\bFormat-Volume\b",
+        ]
+        if not ctx.get("allow_irreversible", False):
+            for pat in dangerous_patterns:
+                if re.search(pat, cmd_str, re.IGNORECASE):
+                    return {
+                        "exit_code": 1,
+                        "error": "Destructive system operation blocked by Sentinel Motor Safety Guard",
+                        "stdout": "",
+                        "stderr": f"Blocked command matching high-risk pattern: {cmd_str}",
+                        "command": cmd_str,
+                    }
+
         if shell == "cmd":
             exec_args = ["cmd.exe", "/c", cmd_str]
         else:
             exec_args = ["powershell.exe", "-NoProfile", "-Command", cmd_str]
 
-        proc = subprocess.run(exec_args, capture_output=True, text=True, timeout=timeout)
-        return {
-            "exit_code": proc.returncode,
-            "stdout": proc.stdout[:4000],
-            "stderr": proc.stderr[:2000],
-            "command": cmd_str,
-        }
+        # 2. Win32 Job Object Resource Containment
+        job = None
+        try:
+            from sentinel_runner.win_job import JobObject
+            job = JobObject(memory_limit_mb=512, cpu_rate_percent=50.0, kill_on_close=True)
+        except Exception as e:
+            logger.warning("Could not initialize Win32 JobObject for command execution: %s", e)
+
+        proc = None
+        try:
+            proc = subprocess.Popen(
+                exec_args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            if job and hasattr(proc, "_handle"):
+                try:
+                    job.assign_process(int(proc._handle))
+                except Exception as e:
+                    logger.warning("Could not assign process to JobObject: %s", e)
+
+            stdout, stderr = proc.communicate(timeout=timeout)
+            return {
+                "exit_code": proc.returncode,
+                "stdout": stdout[:4000],
+                "stderr": stderr[:2000],
+                "command": cmd_str,
+                "sandboxed": job is not None,
+            }
+        except subprocess.TimeoutExpired:
+            if job:
+                job.terminate()
+            if proc:
+                proc.kill()
+                proc.communicate()
+            return {
+                "exit_code": -1,
+                "error": f"Command timed out after {timeout}s",
+                "stdout": "",
+                "stderr": f"Execution exceeded {timeout}s limit",
+                "command": cmd_str,
+            }
+        finally:
+            if job:
+                job.close()

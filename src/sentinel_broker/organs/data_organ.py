@@ -47,30 +47,53 @@ def register_data_organs(registry: ToolRegistry, llm_gateway: LLMGateway | None 
             f.write(script_code)
             tmp_script = f.name
 
+        job = None
+        try:
+            from sentinel_runner.win_job import JobObject
+            job = JobObject(memory_limit_mb=256, cpu_rate_percent=25.0, kill_on_close=True)
+        except Exception as e:
+            logger.warning("Could not initialize Win32 JobObject for sandbox: %s", e)
+
+        proc = None
         try:
             start_t = time.time()
-            proc = subprocess.run(
-                [sys.executable, tmp_script],
-                capture_output=True,
+            proc = subprocess.Popen(
+                [sys.executable, "-I", "-s", tmp_script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=timeout,
             )
+            if job and hasattr(proc, "_handle"):
+                try:
+                    job.assign_process(int(proc._handle))
+                except Exception as e:
+                    logger.warning("Could not assign process to JobObject: %s", e)
+
+            stdout, stderr = proc.communicate(timeout=timeout)
             duration = time.time() - start_t
             artifact_exists = Path(output_artifact).exists() if output_artifact else False
             artifact_size = Path(output_artifact).stat().st_size if artifact_exists else 0
 
             return {
                 "exit_code": proc.returncode,
-                "stdout": proc.stdout,
-                "stderr": proc.stderr,
+                "stdout": stdout,
+                "stderr": stderr,
                 "duration_sec": round(duration, 3),
                 "artifact_path": output_artifact,
                 "artifact_exists": artifact_exists,
                 "artifact_size_bytes": artifact_size,
+                "sandboxed": job is not None,
             }
         except subprocess.TimeoutExpired:
+            if job:
+                job.terminate()
+            if proc:
+                proc.kill()
+                proc.communicate()
             return {"error": f"Script execution timed out after {timeout}s", "exit_code": -1}
         finally:
+            if job:
+                job.close()
             if os.path.exists(tmp_script):
                 try:
                     os.unlink(tmp_script)

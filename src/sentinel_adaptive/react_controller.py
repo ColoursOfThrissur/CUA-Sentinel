@@ -106,13 +106,19 @@ class ReActController:
             return t[:period_idx + 1]
         return t[:max_chars].rstrip() + "..."
 
-    def parse_turn(self, text: str) -> tuple[str, str | None, dict[str, Any] | None, str | None]:
+    def parse_turn(
+        self,
+        text: str,
+        turn: int = 1,
+        max_turns: int = 8,
+    ) -> tuple[str, str | None, dict[str, Any] | None, str | None]:
         """
         Parses agent output into (thought, action, action_input, final_answer).
         Handles:
         1. Final Answer: ...
         2. Action: <tool> \n Action Input: <json>
-        3. Embedded JSON blocks: {"action": "...", "action_input": {...}}
+        3. Embedded JSON blocks: {"action": "...", "action_input": {...}} or {"tool": "...", "parameters": {...}}
+        4. Conversational stalls (nudge protocol if turn < max_turns)
         """
         clean_text = text.strip()
 
@@ -134,7 +140,7 @@ class ReActController:
             return self._truncate_thought(thought), None, None, final_ans
 
         # Check for standard ReAct: Action: <tool> \n Action Input: <json>
-        action_match = re.search(r"Action:\s*([a-zA-Z0-9_\-]+)", clean_text, re.IGNORECASE)
+        action_match = re.search(r"Action:\s*[`'\"]?([a-zA-Z0-9_\-]+)[`'\"]?", clean_text, re.IGNORECASE)
         if action_match:
             action = action_match.group(1).strip()
             thought = clean_text[:action_match.start()].strip()
@@ -149,15 +155,22 @@ class ReActController:
             action_input = self._extract_json_dict(raw_input_str)
             return self._truncate_thought(thought), action, action_input, None
 
-        # Check for JSON action payload: {"action": "...", "action_input": {...}}
+        # Check for JSON action payload: {"action": "...", "action_input": {...}} or {"tool": "...", "parameters": {...}}
         json_dict = self._extract_json_dict(clean_text)
-        if json_dict and "action" in json_dict:
-            action = str(json_dict["action"]).strip()
-            action_input = json_dict.get("action_input", {})
-            thought = json_dict.get("thought", "Executing requested tool action.")
-            return self._truncate_thought(thought), action, action_input, None
+        if json_dict:
+            raw_tool = json_dict.get("action") or json_dict.get("tool") or json_dict.get("tool_name") or json_dict.get("name")
+            if raw_tool:
+                action = str(raw_tool).strip()
+                action_input = json_dict.get("action_input") or json_dict.get("parameters") or json_dict.get("arguments") or json_dict.get("params") or {}
+                thought = json_dict.get("thought", "Executing requested tool action.")
+                return self._truncate_thought(thought), action, action_input, None
 
-        # If no action detected and no explicit Final Answer prefix, treat entire text as Final Answer
+        # If turn < max_turns, do not premature-abort to Final Answer when model was conversational or stalls!
+        if turn < max_turns:
+            thought = re.sub(r"^Thought:\s*", "", clean_text, flags=re.IGNORECASE).strip()
+            return self._truncate_thought(thought), None, None, None
+
+        # If turn >= max_turns, treat remaining text as Final Answer
         return "", None, None, clean_text
 
     def _extract_json_dict(self, s: str) -> dict[str, Any]:
@@ -252,7 +265,9 @@ class ReActController:
                     error=f"LLM generation failed: {e}",
                 )
 
-            thought, action, action_input, final_answer = self.parse_turn(raw_response)
+            thought, action, action_input, final_answer = self.parse_turn(
+                raw_response, turn=turn, max_turns=self.max_turns
+            )
 
             # Case 1: Agent has arrived at Final Answer
             if final_answer is not None:
@@ -323,10 +338,21 @@ class ReActController:
                 conversation_history.append(turn_transcript)
 
             else:
-                # If neither action nor clean final answer, remind model of protocol
+                # Conversational stall or unformatted turn - remind model of protocol and record trajectory step
+                logger.warning("Turn %d: Conversational output without Action or Final Answer. Nudging protocol.", turn)
+                step = ReActStep(
+                    turn=turn,
+                    thought=thought or "Conversational reasoning without tool invocation.",
+                    observation="PROTOCOL_REMINDER: Action not detected.",
+                )
+                trajectory.append(step)
                 conversation_history.append(
                     f"Thought: {thought}\n"
-                    "Observation: Invalid response format. You must specify either 'Action: <tool>\\nAction Input: {...}' or 'Final Answer: <markdown>'."
+                    "Observation: PROTOCOL REMINDER: You did not select an Action. You must call a tool using:\n"
+                    "Action: <tool_name>\n"
+                    "Action Input: {<parameters>}\n\n"
+                    "Or if you have finished all tasks, conclude with:\n"
+                    "Final Answer: <your complete report>"
                 )
 
         # Max Turns Exceeded: Force final synthesis

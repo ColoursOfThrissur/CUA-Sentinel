@@ -74,15 +74,22 @@ class PreFlightLinter:
             )
             applied.append("Sanitized undefined obj_data to bpy.context.active_object.data")
 
-        # 1c. Sanitize unlinked bpy.data.objects.new calls
-        if "bpy.data.objects.new" in modified_code and "collection.link" not in modified_code:
+        # 1c. Auto-link unlinked bpy.data.objects.new calls
+        # If an object is created with bpy.data.objects.new, ensure it is linked to the collection.
+        # Crucially: do NOT comment out the variable assignment as that causes downstream NameError.
+        if "bpy.data.objects.new" in modified_code and ".link(" not in modified_code:
+            def _link_repl(match):
+                var_name = match.group(1)
+                full_stmt = match.group(0)
+                return f"{full_stmt}\nbpy.context.collection.objects.link({var_name})"
+
             modified_code = re.sub(
-                r"^\s*\w+\s*=\s*bpy\.data\.objects\.new\(.*?\)\s*$",
-                "# \\g<0> (Auto-disabled: unlinked object creation)",
+                r"^\s*(\w+)\s*=\s*bpy\.data\.objects\.new\(.*?\)\s*$",
+                _link_repl,
                 modified_code,
                 flags=re.MULTILINE,
             )
-            applied.append("Disabled unlinked bpy.data.objects.new call")
+            applied.append("Auto-linked newly created bpy.data.objects.new object to active collection")
 
         # 2. Blender 4.0+ Export Operator rewrite
         # bpy.ops.export_scene.obj(filepath=...) -> bpy.ops.wm.obj_export(filepath=...)

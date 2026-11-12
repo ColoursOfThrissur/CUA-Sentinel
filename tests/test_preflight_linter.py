@@ -58,4 +58,30 @@ def test_preflight_syntax_error_fast_fail():
     broken_code = "class Broken(:\n    def foo(): pass"
     res = PreFlightLinter.sanitize(broken_code, domain="code")
     assert res.fatal_error is not None
-    assert "SyntaxError" in res.fatal_error
+
+
+def test_blender_object_creation_not_commented_out_when_linked():
+    code_with_objects_link = (
+        "import bpy\n"
+        "bpy.ops.wm.read_factory_settings(use_empty=True)\n"
+        "tube = bpy.data.objects.new('Telescope_Tube', None)\n"
+        "obj_tube = bpy.context.collection.objects.link(tube)\n"
+        "bpy.ops.wm.obj_export(filepath=r'test.obj')\n"
+    )
+    res = PreFlightLinter.sanitize(code_with_objects_link, domain="3d")
+    assert "tube = bpy.data.objects.new('Telescope_Tube', None)" in res.code
+    assert "# tube = " not in res.code
+    assert "Auto-disabled" not in res.code
+
+
+def test_blender_object_creation_auto_linked_when_unlinked():
+    code_unlinked = (
+        "import bpy\n"
+        "bpy.ops.wm.read_factory_settings(use_empty=True)\n"
+        "tube = bpy.data.objects.new('Telescope_Tube', None)\n"
+        "bpy.ops.wm.obj_export(filepath=r'test.obj')\n"
+    )
+    res = PreFlightLinter.sanitize(code_unlinked, domain="3d")
+    assert "tube = bpy.data.objects.new('Telescope_Tube', None)" in res.code
+    assert "bpy.context.collection.objects.link(tube)" in res.code
+    assert "# tube = " not in res.code

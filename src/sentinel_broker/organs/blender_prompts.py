@@ -355,12 +355,103 @@ fin.name = "Vertical_Stabilizer"
 fin.scale = (0.06, 0.6, 0.8)
 bpy.ops.object.transform_apply(scale=True)
 """
+    elif any(k in g for k in ["telescope", "optics", "spyglass", "monocular", "observatory"]):
+        mesh_code = """
+# 1. Main Optical Tube (angled upward 25 degrees)
+bpy.ops.mesh.primitive_cylinder_add(radius=0.25, depth=3.0, location=(0, 0, 2.2), rotation=(math.radians(25), 0, 0))
+tube = bpy.context.active_object
+tube.name = "Optical_Tube"
+
+# 2. Objective Lens Dew Shield
+bpy.ops.mesh.primitive_cylinder_add(radius=0.32, depth=0.6, location=(0, -1.25, 2.78), rotation=(math.radians(25), 0, 0))
+shield = bpy.context.active_object
+shield.name = "Dew_Shield"
+
+# 3. Eyepiece & Diagonal Focuser
+bpy.ops.mesh.primitive_cylinder_add(radius=0.12, depth=0.5, location=(0, 1.45, 1.6), rotation=(math.radians(25), 0, 0))
+eyepiece = bpy.context.active_object
+eyepiece.name = "Eyepiece_Assembly"
+
+# 4. Equatorial Mount Central Hub
+bpy.ops.mesh.primitive_cylinder_add(radius=0.35, depth=0.4, location=(0, 0, 1.8))
+hub = bpy.context.active_object
+hub.name = "Mount_Hub"
+
+# 5. Tripod Legs (3 legs radiating outward at 120-degree intervals)
+for i in range(3):
+    angle = i * (2 * math.pi / 3)
+    leg_x = math.sin(angle) * 0.9
+    leg_y = math.cos(angle) * 0.9
+    bpy.ops.mesh.primitive_cylinder_add(
+        radius=0.06,
+        depth=2.0,
+        location=(leg_x * 0.5, leg_y * 0.5, 0.9),
+        rotation=(leg_y * 0.35, -leg_x * 0.35, 0)
+    )
+    leg = bpy.context.active_object
+    leg.name = f"Tripod_Leg_{i+1}"
+
+# Materials
+tube_mat = bpy.data.materials.new(name="Tube_Enamel")
+tube_mat.use_nodes = True
+bsdf = tube_mat.node_tree.nodes.get("Principled BSDF")
+if bsdf:
+    bsdf.inputs["Base Color"].default_value = (0.05, 0.08, 0.15, 1.0)
+    bsdf.inputs["Roughness"].default_value = 0.2
+    if "Metallic" in bsdf.inputs:
+        bsdf.inputs["Metallic"].default_value = 0.8
+tube.data.materials.append(tube_mat)
+shield.data.materials.append(tube_mat)
+
+brass_mat = bpy.data.materials.new(name="Polished_Brass")
+brass_mat.use_nodes = True
+b_bsdf = brass_mat.node_tree.nodes.get("Principled BSDF")
+if b_bsdf:
+    b_bsdf.inputs["Base Color"].default_value = (0.85, 0.65, 0.2, 1.0)
+    b_bsdf.inputs["Roughness"].default_value = 0.25
+    if "Metallic" in b_bsdf.inputs:
+        b_bsdf.inputs["Metallic"].default_value = 0.9
+eyepiece.data.materials.append(brass_mat)
+hub.data.materials.append(brass_mat)
+"""
     else:
-        # Default procedural abstract entity
-        mesh_code = f"""
-bpy.ops.mesh.primitive_cylinder_add(radius=1.5, depth=0.3, location=(0, 0, 0.15))
-bpy.ops.mesh.primitive_cube_add(size=1.2, location=(0, 0, 0.9))
-bpy.ops.mesh.primitive_uv_sphere_add(radius=0.8, location=(0, 0, 2.0))
+        # Structured architectural monument / pedestal entity (never unspecialized primitives)
+        mesh_code = """
+# 1. Beveled Plinth Base
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 0.2))
+base = bpy.context.active_object
+base.name = "Plinth_Base"
+base.scale = (2.2, 2.2, 0.4)
+bpy.ops.object.transform_apply(scale=True)
+
+# 2. Fluted Central Column
+bpy.ops.mesh.primitive_cylinder_add(vertices=16, radius=0.6, depth=2.0, location=(0, 0, 1.4))
+column = bpy.context.active_object
+column.name = "Central_Column"
+
+# 3. Capital Header
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 2.5))
+cap = bpy.context.active_object
+cap.name = "Capital_Header"
+cap.scale = (1.6, 1.6, 0.2)
+bpy.ops.object.transform_apply(scale=True)
+
+# 4. Finial Crown
+bpy.ops.mesh.primitive_uv_sphere_add(segments=16, ring_count=12, radius=0.5, location=(0, 0, 2.9))
+finial = bpy.context.active_object
+finial.name = "Finial_Crown"
+
+# Assign materials
+stone_mat = bpy.data.materials.new(name="Carved_Stone")
+stone_mat.use_nodes = True
+s_bsdf = stone_mat.node_tree.nodes.get("Principled BSDF")
+if s_bsdf:
+    s_bsdf.inputs["Base Color"].default_value = (0.45, 0.45, 0.48, 1.0)
+    s_bsdf.inputs["Roughness"].default_value = 0.6
+base.data.materials.append(stone_mat)
+column.data.materials.append(stone_mat)
+cap.data.materials.append(stone_mat)
+finial.data.materials.append(stone_mat)
 """
 
     return header + mesh_code + footer

@@ -261,3 +261,32 @@ def test_react_thought_truncation(react_setup):
     thought, action, _, _ = controller.parse_turn(sample)
     assert len(thought) <= 305
     assert action == "system_filesystem_inspect"
+
+
+def test_react_conversational_stall_recovery(react_setup):
+    broker, lease_rec, ws_dir = react_setup
+    # Turn 1: Conversational without Action or Final Answer
+    # Turn 2: Follows up with proper Action
+    # Turn 3: Concludes with Final Answer
+    mock_responses = [
+        "I will help you find the largest files. First, let's explore the available tools.",
+        "Thought: Inspecting drives now.\nAction: system_filesystem_inspect\nAction Input: {\"mode\": \"list_drives\"}",
+        "Final Answer: Inspection complete.",
+    ]
+    mock_gw = MockLLMGateway(mock_responses)
+    controller = ReActController(broker, mock_gw, max_turns=5)
+
+    res = controller.run_react_loop(
+        task_id="task_react_test",
+        attempt_id=lease_rec.attempt_id,
+        lease_token=lease_rec.lease_token,
+        goal="Audit filesystem",
+    )
+
+    assert res.success is True
+    assert res.turns_taken == 3
+    assert len(res.trajectory) == 3
+    assert res.trajectory[0].observation == "PROTOCOL_REMINDER: Action not detected."
+    assert res.trajectory[1].action == "system_filesystem_inspect"
+    assert "Inspection complete" in res.final_answer
+

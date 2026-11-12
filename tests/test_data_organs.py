@@ -25,6 +25,7 @@ print("FINISHED")
     assert res["exit_code"] == 0
     assert "FINISHED" in res["stdout"]
     assert res["artifact_exists"] is True
+    assert res.get("sandboxed") is True
     assert target_file.read_text().strip() == "SANDBOX_SUCCESS"
 
 
