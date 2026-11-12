@@ -262,7 +262,7 @@ effect_class: {eff_str}
 
         # 1. 3D Blender Mesh Skill
         if domain == "3d" or "bpy" in code:
-            from sentinel_broker.organs.blender import run_blender_script
+            from sentinel_broker.organs.blender import _run_blender_script, find_blender_executable
             output_obj = params.get("output_obj_path") or params.get("output_path") or f"workspaces/{name}.obj"
             run_code = code
             if "bpy.ops.wm.obj_export" in run_code and output_obj:
@@ -272,7 +272,8 @@ effect_class: {eff_str}
                     f'bpy.ops.wm.obj_export(filepath=r"{escaped_out}")',
                     run_code,
                 )
-            res = run_blender_script(run_code, output_obj_path=output_obj)
+            blender_exe = find_blender_executable()
+            res = _run_blender_script(blender_exe, run_code, output_obj, timeout=60.0)
             return {
                 "success": res.get("exit_code") == 0,
                 "tool_result": res,

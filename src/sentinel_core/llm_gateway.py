@@ -17,6 +17,7 @@ logger = logging.getLogger("SentinelLLMGateway")
 
 class LLMGateway:
     """Gateway for local LLM inference via Ollama."""
+    gateway_type: str = "local"
 
     def __init__(
         self,

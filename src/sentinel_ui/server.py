@@ -50,6 +50,7 @@ from sentinel_broker.organs.web_organ import register_web_organs
 from sentinel_broker.organs.desktop_organ import register_desktop_organs
 from sentinel_runner.appcontainer_host import AppContainerHost
 from sentinel_core.llm_gateway import LLMGateway
+from sentinel_core.hybrid_gateway import HybridModelGateway
 from sentinel_core.preflight_linter import PreFlightLinter
 from sentinel_core.contract_library import ContractLibrary
 from sentinel_core.prompt_scaffolder import PromptScaffolder, ScaffoldingLevel
@@ -173,6 +174,10 @@ if (staging_dir / "python.exe").exists():
         logger.warning("Could not initialize AppContainerHost: %s", e)
 
 pilot = AdaptivePilotController(state_machine, verification_gate, mistake_memory, skill_bank)
+hybrid_gateway = HybridModelGateway(
+    local_gateway=LLMGateway(endpoint=config.llm.endpoint, default_model=config.llm.model),
+    config=config.hybrid_gateway,
+)
 active_cancellation_tokens: dict[str, threading.Event] = {}
 active_running_pids: dict[str, int] = {}
 
@@ -364,6 +369,44 @@ def list_models():
             return {"active_model": config.llm.model, "available_models": models}
     except Exception:
         return {"active_model": config.llm.model, "available_models": [config.llm.model]}
+
+
+@app.get("/api/workspace/path")
+def get_workspace_path():
+    """Returns dynamic workspace directory paths for UI components."""
+    return {
+        "workspace_dir": str(workspaces_dir.resolve()).replace("\\", "/"),
+        "repo_workspace_dir": str(repo_workspaces_dir.resolve()).replace("\\", "/"),
+    }
+
+
+class HybridRouteRequest(BaseModel):
+    goal: str
+    context: str = ""
+    mode: str | None = None
+
+
+@app.get("/api/hybrid/status")
+def get_hybrid_status():
+    """Returns operational status of local GPU and cloud gateways with privacy fence policy."""
+    return {
+        "cloud_available": hybrid_gateway.is_cloud_available(),
+        "local_available": hybrid_gateway.is_local_available(),
+        "default_mode": hybrid_gateway.default_mode,
+        "privacy_fence_enabled": hybrid_gateway.privacy_fence_enabled,
+        "cloud_model": hybrid_gateway.cfg.cloud_model,
+        "local_model": config.llm.model,
+    }
+
+
+@app.post("/api/hybrid/route")
+def route_hybrid_task(req: HybridRouteRequest):
+    """Evaluates Rule R14 / AT-C-10 Privacy Fence to determine whether a goal can egress to cloud."""
+    return hybrid_gateway.get_routing_decision(
+        goal=req.goal,
+        context=req.context,
+        mode=req.mode,
+    )
 
 
 @app.get("/api/telemetry")
@@ -620,17 +663,21 @@ class BlenderModifyRequest(BaseModel):
 def blender_modify(req: BlenderModifyRequest):
     """Apply material colors or modifiers to an existing OBJ artifact via Blender headless."""
     action = req.action.lower()
-    output_path = req.output_obj_path or req.artifact_obj_path
+    
+    # Dynamically resolve artifact path (supports basename, relative path, or absolute path)
+    resolved_file = find_artifact_file(req.artifact_obj_path)
+    target_path = str(resolved_file.resolve()) if resolved_file else req.artifact_obj_path
+    output_path = req.output_obj_path or target_path
 
     if action == "list_objects":
         result = tool_registry.execute_tool("blender_list_scene_objects", {
-            "artifact_obj_path": req.artifact_obj_path,
+            "artifact_obj_path": target_path,
         })
         return {"action": "list_objects", "result": result}
 
     elif action == "set_color":
         result = tool_registry.execute_tool("blender_set_material_color", {
-            "artifact_obj_path": req.artifact_obj_path,
+            "artifact_obj_path": target_path,
             "hex_color": req.hex_color,
             "metalness": req.metalness,
             "roughness": req.roughness,
@@ -648,7 +695,7 @@ def blender_modify(req: BlenderModifyRequest):
 
     elif action == "add_modifier":
         result = tool_registry.execute_tool("blender_add_modifier", {
-            "artifact_obj_path": req.artifact_obj_path,
+            "artifact_obj_path": target_path,
             "modifier_type": req.modifier_type,
             "strength": req.strength,
             "object_name": req.object_name,
@@ -664,7 +711,7 @@ def blender_modify(req: BlenderModifyRequest):
 
     elif action == "apply_modifiers":
         result = tool_registry.execute_tool("blender_apply_modifiers", {
-            "artifact_obj_path": req.artifact_obj_path,
+            "artifact_obj_path": target_path,
             "output_obj_path": output_path,
             "timeout_sec": req.timeout_sec,
         })

@@ -28,6 +28,7 @@ export function ViewportModal({ artifactName, onClose }) {
   const [matOpBusy, setMatOpBusy] = useState(false);
   const [matOpResult, setMatOpResult] = useState(null);
   const [matOpError, setMatOpError] = useState(null);
+  const [workspacePath, setWorkspacePath] = useState('');
 
   const canvasRef = useRef(null);
   const threeCleanupRef = useRef(null);
@@ -38,6 +39,16 @@ export function ViewportModal({ artifactName, onClose }) {
   const cleanName = artifactName ? artifactName.split(/[/\\]/).pop() : '';
   const fileType = cleanName ? cleanName.split('.').pop().toLowerCase() : '';
   const fileUrl = `/workspaces/${cleanName}`;
+
+  // Fetch dynamic workspace path from backend once
+  useEffect(() => {
+    fetch('/api/workspace/path')
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.workspace_dir) setWorkspacePath(data.workspace_dir);
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!cleanName) return;
@@ -277,10 +288,11 @@ export function ViewportModal({ artifactName, onClose }) {
   // Fetch the list of objects in the scene when the panel opens
   const loadSceneObjects = () => {
     if (!cleanName || fileType !== 'obj') return;
+    const targetPath = workspacePath ? `${workspacePath}/${cleanName}` : cleanName;
     fetch('/api/blender/modify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ artifact_obj_path: `G:/Sentinel_Workspace/${cleanName}`, action: 'list_objects' }),
+      body: JSON.stringify({ artifact_obj_path: targetPath, action: 'list_objects' }),
     })
       .then((r) => r.json())
       .then((data) => {
@@ -346,8 +358,9 @@ export function ViewportModal({ artifactName, onClose }) {
     setMatOpResult(null);
     setMatOpError(null);
 
+    const targetPath = workspacePath ? `${workspacePath}/${cleanName}` : cleanName;
     const body = {
-      artifact_obj_path: `G:/Sentinel_Workspace/${cleanName}`,
+      artifact_obj_path: targetPath,
       action,
       hex_color: matHexColor,
       metalness: matMetalness,

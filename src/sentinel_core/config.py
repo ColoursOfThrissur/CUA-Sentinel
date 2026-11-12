@@ -78,6 +78,16 @@ class LLMConfig:
 
 
 @dataclass
+class HybridGatewayConfig:
+    enabled: bool = False
+    default_mode: str = "local"  # "local" | "cloud" | "auto"
+    cloud_provider: str = "gemini"
+    cloud_model: str = "gemini-1.5-flash"
+    escalation_threshold_chars: int = 50
+    privacy_fence_enabled: bool = True
+
+
+@dataclass
 class SentinelConfig:
     environment: str = "development"
     log_level: str = "INFO"
@@ -88,6 +98,7 @@ class SentinelConfig:
     policy: PolicyConfig = field(default_factory=PolicyConfig)
     network_policy: NetworkPolicyConfig = field(default_factory=NetworkPolicyConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
+    hybrid_gateway: HybridGatewayConfig = field(default_factory=HybridGatewayConfig)
 
     @classmethod
     def load(cls, config_path: str | Path | None = None) -> SentinelConfig:
@@ -105,6 +116,7 @@ class SentinelConfig:
         policy_data = data.get("policy", {})
         net_data = data.get("network_policy", {})
         llm_data = data.get("llm", {})
+        hybrid_data = data.get("hybrid_gateway", {})
 
         return cls(
             environment=data.get("system", {}).get("environment", "development"),
@@ -116,6 +128,7 @@ class SentinelConfig:
             policy=PolicyConfig(**policy_data),
             network_policy=NetworkPolicyConfig(**net_data),
             llm=LLMConfig(**llm_data),
+            hybrid_gateway=HybridGatewayConfig(**hybrid_data),
         )
 
     def save(self, config_path: str | Path | None = None):
@@ -132,6 +145,7 @@ class SentinelConfig:
             "policy": asdict(self.policy),
             "network_policy": asdict(self.network_policy),
             "llm": asdict(self.llm),
+            "hybrid_gateway": asdict(self.hybrid_gateway),
         }
         p.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
 
@@ -146,6 +160,7 @@ class SentinelConfig:
             "policy": asdict(self.policy),
             "network_policy": asdict(self.network_policy),
             "llm": asdict(self.llm),
+            "hybrid_gateway": asdict(self.hybrid_gateway),
         }
 
     def update_from_dict(self, data: dict[str, Any]):
@@ -173,3 +188,7 @@ class SentinelConfig:
             for k, v in data["llm"].items():
                 if hasattr(self.llm, k):
                     setattr(self.llm, k, v)
+        if "hybrid_gateway" in data:
+            for k, v in data["hybrid_gateway"].items():
+                if hasattr(self.hybrid_gateway, k):
+                    setattr(self.hybrid_gateway, k, v)
