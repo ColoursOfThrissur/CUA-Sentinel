@@ -35,6 +35,21 @@ KEYEVENTF_UNICODE = 0x0004
 FORBIDDEN_KEY_COMBOS = {"alt+f4", "ctrl+alt+del", "win+l", "ctrl+shift+esc"}
 
 
+def init_dpi_awareness():
+    """Initializes per-monitor DPI awareness so GDI screen capture and mouse clicks match physical display pixels."""
+    try:
+        # PROCESS_PER_MONITOR_DPI_AWARE = 2
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+# Initialize DPI awareness on module load
+init_dpi_awareness()
+
+
 class BITMAPINFOHEADER(ctypes.Structure):
     _fields_ = [
         ('biSize', wintypes.DWORD),
@@ -56,6 +71,7 @@ class POINT(ctypes.Structure):
 
 
 def get_screen_resolution() -> tuple[int, int]:
+    init_dpi_awareness()
     w = user32.GetSystemMetrics(0)
     h = user32.GetSystemMetrics(1)
     return w, h

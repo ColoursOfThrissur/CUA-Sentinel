@@ -1,4 +1,4 @@
-import { useState } from 'https://esm.sh/react@18.3.1';
+import { useState, useRef, useEffect, useCallback } from 'https://esm.sh/react@18.3.1';
 import { html } from '../html.js';
 import { Icon } from '../icons.js';
 
@@ -16,6 +16,95 @@ export function DagCanvas({
   const [showBuilder, setShowBuilder] = useState(false);
   const [pipelineName, setPipelineName] = useState('Custom Multi-Agent Pipeline');
   const [pipelineDesc, setPipelineDesc] = useState('Operator configured multi-stage pipeline');
+  const boardRef = useRef(null);
+  const [connections, setConnections] = useState([]);
+
+  const computeConnections = useCallback(() => {
+    if (!boardRef.current || !selectedRun || !selectedRun.steps) {
+      setConnections([]);
+      return;
+    }
+
+    const boardEl = boardRef.current;
+    const bRect = boardEl.getBoundingClientRect();
+    const newConns = [];
+
+    const steps = selectedRun.steps;
+    for (const step of steps) {
+      const stepId = step.step_id || step.id;
+      const deps = step.dependencies || [];
+      if (!deps.length) continue;
+
+      const childEl = boardEl.querySelector(`[data-step-id="${stepId}"]`);
+      if (!childEl) continue;
+      const cRect = childEl.getBoundingClientRect();
+
+      for (const parentId of deps) {
+        const parentEl = boardEl.querySelector(`[data-step-id="${parentId}"]`);
+        if (!parentEl) continue;
+        const pRect = parentEl.getBoundingClientRect();
+
+        // Relative coordinates to board
+        const pLeft = pRect.left - bRect.left;
+        const pRight = pRect.right - bRect.left;
+        const pTop = pRect.top - bRect.top;
+        const pBottom = pRect.bottom - bRect.top;
+        const pCenterX = pLeft + pRect.width / 2;
+        const pCenterY = pTop + pRect.height / 2;
+
+        const cLeft = cRect.left - bRect.left;
+        const cRight = cRect.right - bRect.left;
+        const cTop = cRect.top - bRect.top;
+        const cBottom = cRect.bottom - bRect.top;
+        const cCenterX = cLeft + cRect.width / 2;
+        const cCenterY = cTop + cRect.height / 2;
+
+        let d = '';
+        // If child is mostly to the right of parent
+        if (cLeft >= pRight - 20) {
+          const x1 = pRight;
+          const y1 = pCenterY;
+          const x2 = cLeft;
+          const y2 = cCenterY;
+          const dx = Math.max(30, (x2 - x1) * 0.5);
+          d = `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
+        } else if (cTop >= pBottom - 10) {
+          // Child is on a lower line/row
+          const x1 = pCenterX;
+          const y1 = pBottom;
+          const x2 = cCenterX;
+          const y2 = cTop;
+          const dy = Math.max(30, (y2 - y1) * 0.5);
+          d = `M ${x1} ${y1} C ${x1} ${y1 + dy}, ${x2} ${y2 - dy}, ${x2} ${y2}`;
+        } else {
+          // Wrapped around or arbitrary layout
+          const x1 = pRight;
+          const y1 = pCenterY;
+          const x2 = cLeft;
+          const y2 = cCenterY;
+          const dx = Math.abs(x2 - x1) * 0.4 + 20;
+          d = `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
+        }
+
+        newConns.push({
+          id: `${parentId}->${stepId}`,
+          d,
+          state: step.state || 'Pending',
+        });
+      }
+    }
+
+    setConnections(newConns);
+  }, [selectedRun]);
+
+  useEffect(() => {
+    const timer = setTimeout(computeConnections, 60);
+    window.addEventListener('resize', computeConnections);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('resize', computeConnections);
+    };
+  }, [computeConnections, selectedRun]);
   const [customSteps, setCustomSteps] = useState([
     {
       step_id: 'step_1_collect',
@@ -226,7 +315,32 @@ export function DagCanvas({
         `}
 
         ${selectedRun && html`
-          <div className="dag-canvas-board">
+          <div className="dag-canvas-board" ref=${boardRef}>
+            <svg className="dag-connections-svg">
+              <defs>
+                <marker id="dag-arrow-default" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                  <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="rgba(100, 116, 139, 0.7)" />
+                </marker>
+                <marker id="dag-arrow-Succeeded" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                  <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#10b981" />
+                </marker>
+                <marker id="dag-arrow-Running" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                  <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#3b82f6" />
+                </marker>
+                <marker id="dag-arrow-Failed" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                  <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#f43f5e" />
+                </marker>
+              </defs>
+              ${connections.map((c) => html`
+                <path
+                  key=${c.id}
+                  d=${c.d}
+                  className=${`dag-edge-path ${c.state}`}
+                  marker-end=${`url(#dag-arrow-${['Succeeded', 'Running', 'Failed'].includes(c.state) ? c.state : 'default'})`}
+                />
+              `)}
+            </svg>
+
             <div className="dag-wave-row">
               <div className="dag-wave-header">
                 <${Icon} name="sparkles" size=${13} />
@@ -237,8 +351,9 @@ export function DagCanvas({
                 ${(selectedRun.steps || []).map((step) => {
                   const rawArt = step.artifact_filename || step.output_artifact || step.artifact || null;
                   const artifact = rawArt ? rawArt.split(/[/\\]/).pop() : null;
+                  const stepKey = step.step_id || step.id;
                   return html`
-                    <div key=${step.step_id || step.id} className=${`dag-node-card ${step.state}`}>
+                    <div key=${stepKey} data-step-id=${stepKey} className=${`dag-node-card ${step.state}`}>
                       <div style=${{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                         <span className=${`domain-badge ${step.domain || 'report'}`}>${step.agent_id}</span>
                         <span className=${`pill ${step.state}`} style=${{ fontSize: '10px', padding: '2px 7px' }}>

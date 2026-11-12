@@ -449,11 +449,6 @@ class DAGOrchestrator:
                     curr_dag = self.get_dag(dag_id)
                     if curr_dag and curr_dag.get("state") == DAGState.CANCELLED.value:
                         return False
-                    if has_failure:
-                        self.update_step_state(dag_id, s_id, DAGStepState.SKIPPED, error="Prerequisite step failed")
-                        steps_dict[s_id]["state"] = DAGStepState.SKIPPED.value
-                        completed_count += 1
-                        return False
 
                     deps = step["dependencies"]
                     prereq_failed = any(

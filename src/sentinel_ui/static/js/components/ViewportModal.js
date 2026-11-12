@@ -29,6 +29,8 @@ export function ViewportModal({ artifactName, onClose }) {
   const [matOpResult, setMatOpResult] = useState(null);
   const [matOpError, setMatOpError] = useState(null);
   const [workspacePath, setWorkspacePath] = useState('');
+  const [imageDims, setImageDims] = useState({ width: 0, height: 0 });
+  const [imageZoom, setImageZoom] = useState(1);
 
   const canvasRef = useRef(null);
   const threeCleanupRef = useRef(null);
@@ -38,6 +40,7 @@ export function ViewportModal({ artifactName, onClose }) {
 
   const cleanName = artifactName ? artifactName.split(/[/\\]/).pop() : '';
   const fileType = cleanName ? cleanName.split('.').pop().toLowerCase() : '';
+  const isImage = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg'].includes(fileType);
   const fileUrl = `/workspaces/${cleanName}`;
 
   // Fetch dynamic workspace path from backend once
@@ -56,6 +59,8 @@ export function ViewportModal({ artifactName, onClose }) {
     setError(null);
     setContent('');
     setMeshStats({ vertices: 0, faces: 0, dimensions: '' });
+    setImageDims({ width: 0, height: 0 });
+    setImageZoom(1);
 
     if (fileType === 'obj') {
       // 3D Model: fetch text to calculate size/lines and initialize ThreeJS
@@ -76,6 +81,25 @@ export function ViewportModal({ artifactName, onClose }) {
           setError(err.message || 'Failed to load 3D artifact');
           setLoading(false);
         });
+    } else if (isImage) {
+      // Image Artifact (Desktop screenshots, visual sensory captures)
+      const img = new Image();
+      img.onload = () => {
+        setImageDims({ width: img.naturalWidth, height: img.naturalHeight });
+        setLoading(false);
+      };
+      img.onerror = () => {
+        setError(`Failed to load image artifact '${cleanName}'`);
+        setLoading(false);
+      };
+      img.src = fileUrl;
+
+      fetch(fileUrl, { method: 'HEAD' })
+        .then((res) => {
+          const cl = res.headers.get('content-length');
+          if (cl) setFileSizeBytes(parseInt(cl, 10));
+        })
+        .catch(() => {});
     } else {
       // CSV, Python, Markdown, Text
       fetch(fileUrl)
@@ -703,18 +727,19 @@ export function ViewportModal({ artifactName, onClose }) {
         <div className="modal-header">
           <div style=${{ display: 'flex', alignItems: 'center', gap: '12px' }}>
             <${Icon}
-              name=${fileType === 'obj' ? 'box' : fileType === 'csv' ? 'activity' : fileType === 'py' ? 'code' : 'fileText'}
+              name=${fileType === 'obj' ? 'box' : isImage ? 'eye' : fileType === 'csv' ? 'activity' : fileType === 'py' ? 'code' : 'fileText'}
               size=${20}
             />
             <div>
               <div style=${{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <span style=${{ fontSize: '15px', fontWeight: 600, color: '#fff' }}>${cleanName}</span>
                 <span className="pill pending" style=${{ fontSize: '10px', textTransform: 'uppercase' }}>
-                  ${fileType === 'obj' ? '3D MESH' : fileType === 'csv' ? 'CSV DATASET' : fileType === 'py' ? 'PYTHON SCRIPT' : 'DOCUMENT'}
+                  ${fileType === 'obj' ? '3D MESH' : isImage ? 'IMAGE ARTIFACT' : fileType === 'csv' ? 'CSV DATASET' : fileType === 'py' ? 'PYTHON SCRIPT' : 'DOCUMENT'}
                 </span>
               </div>
               <div style=${{ fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>
                 Size: <strong>${formatFileSize(fileSizeBytes)}</strong>
+                ${imageDims.width > 0 ? html` · Resolution: <strong>${imageDims.width} × ${imageDims.height} px</strong>` : ''}
                 ${totalLines > 0 ? html` · Lines: <strong>${totalLines.toLocaleString()}</strong>` : ''}
                 ${meshStats.vertices > 0 ? html` · Vertices: <strong>${meshStats.vertices.toLocaleString()}</strong> · Faces: <strong>${meshStats.faces.toLocaleString()}</strong>` : ''}
               </div>
@@ -1125,6 +1150,88 @@ export function ViewportModal({ artifactName, onClose }) {
               </div>
             `;
           })()}
+
+          <!-- 5. Image Viewport (Desktop Screenshots / Vision Captures) -->
+          ${isImage && !loading && !error && html`
+            <div style=${{
+              flex: 1,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              minHeight: '480px',
+              background: 'radial-gradient(ellipse at center, #0f172a 0%, #020617 100%)',
+              borderRadius: '8px',
+              border: '1px solid var(--border-glass)',
+              padding: '24px',
+              position: 'relative',
+              overflow: 'auto',
+            }}>
+              <!-- Image Zoom Controls -->
+              <div style=${{ position: 'absolute', top: '14px', right: '14px', display: 'flex', gap: '6px', zIndex: 10 }}>
+                <button
+                  className="btn btn-secondary"
+                  style=${{ padding: '4px 10px', fontSize: '11px' }}
+                  onClick=${() => setImageZoom((z) => Math.max(0.25, parseFloat((z - 0.25).toFixed(2))))}
+                  title="Zoom Out"
+                >
+                  -
+                </button>
+                <button
+                  className="btn btn-secondary"
+                  style=${{ padding: '4px 10px', fontSize: '11px', minWidth: '55px' }}
+                  onClick=${() => setImageZoom(1)}
+                  title="Reset to 100%"
+                >
+                  ${Math.round(imageZoom * 100)}%
+                </button>
+                <button
+                  className="btn btn-secondary"
+                  style=${{ padding: '4px 10px', fontSize: '11px' }}
+                  onClick=${() => setImageZoom((z) => Math.min(4, parseFloat((z + 0.25).toFixed(2))))}
+                  title="Zoom In"
+                >
+                  +
+                </button>
+              </div>
+
+              <!-- Main Image Display -->
+              <div style=${{ overflow: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', height: '100%' }}>
+                <img
+                  src=${fileUrl}
+                  alt=${cleanName}
+                  onLoad=${(e) => setImageDims({ width: e.target.naturalWidth, height: e.target.naturalHeight })}
+                  style=${{
+                    maxWidth: imageZoom === 1 ? '100%' : 'none',
+                    maxHeight: imageZoom === 1 ? 'calc(88vh - 220px)' : 'none',
+                    transform: `scale(${imageZoom})`,
+                    transformOrigin: 'center center',
+                    transition: 'transform 0.15s ease-out',
+                    objectFit: 'contain',
+                    borderRadius: '6px',
+                    boxShadow: '0 10px 40px rgba(0,0,0,0.6)',
+                  }}
+                />
+              </div>
+
+              ${imageDims.width > 0 && html`
+                <div style=${{
+                  position: 'absolute',
+                  bottom: '14px',
+                  left: '16px',
+                  fontSize: '11px',
+                  color: '#94a3b8',
+                  background: 'rgba(15,23,42,0.85)',
+                  padding: '4px 12px',
+                  borderRadius: '5px',
+                  border: '1px solid #334155',
+                  backdropFilter: 'blur(6px)',
+                }}>
+                  Native: <strong style=${{ color: '#e2e8f0' }}>${imageDims.width} × ${imageDims.height} px</strong> · Format: <strong style=${{ color: 'var(--accent-cyan)' }}>${fileType.toUpperCase()}</strong>
+                </div>
+              `}
+            </div>
+          `}
         </div>
       </div>
     </div>

@@ -116,6 +116,14 @@ def get_workspace_artifact(filename: str):
     media_types = {
         ".obj": "model/obj",
         ".mtl": "text/plain",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+        ".svg": "image/svg+xml",
+        ".bmp": "image/bmp",
+        ".ico": "image/x-icon",
         ".csv": "text/csv; charset=utf-8",
         ".json": "application/json; charset=utf-8",
         ".md": "text/markdown; charset=utf-8",
@@ -135,11 +143,12 @@ state_machine = StateMachine(db)
 verification_gate = VerificationGate(db)
 mistake_memory = MistakeMemory(db)
 tool_registry = ToolRegistry()
+side_effects = SideEffectLedger(db)
 register_sensory_organs(tool_registry)
 register_motor_organs(tool_registry)
+register_desktop_organs(tool_registry, ledger=side_effects)
 register_blender_organs(tool_registry)
 register_data_organs(tool_registry)
-side_effects = SideEffectLedger(db)
 register_web_organs(
     tool_registry,
     allowed_domains=config.network_policy.allowed_domains,
@@ -2557,7 +2566,8 @@ def index():
     index_file = Path(__file__).parent / "static" / "index.html"
     if index_file.exists():
         return HTMLResponse(content=index_file.read_text(encoding="utf-8"))
-    return HTMLResponse(content=DASHBOARD_HTML)
+    rendered = DASHBOARD_HTML.replace('value="qwen3.5:9b" selected>🧠 Qwen 3.5 (9B) [Active]', f'value="{config.llm.model}" selected>🧠 {config.llm.model} [Active]')
+    return HTMLResponse(content=rendered)
 
 
 def start_server(host: str = "127.0.0.1", port: int = 8000):

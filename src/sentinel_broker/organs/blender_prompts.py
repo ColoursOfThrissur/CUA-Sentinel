@@ -17,7 +17,13 @@ _llm_gateway: LLMGateway | None = None
 def get_llm_gateway() -> LLMGateway:
     global _llm_gateway
     if _llm_gateway is None:
-        _llm_gateway = LLMGateway(default_model="qwen3.5:9b")
+        try:
+            from sentinel_core.config import SentinelConfig
+            from pathlib import Path
+            cfg = SentinelConfig.load(Path("config.yaml"))
+            _llm_gateway = LLMGateway(endpoint=cfg.llm.endpoint, default_model=cfg.llm.model)
+        except Exception:
+            _llm_gateway = LLMGateway()
     return _llm_gateway
 
 
@@ -365,25 +371,26 @@ def synthesize_blender_script(
     output_obj_path: str,
     anti_patterns: str = "",
     use_llm: bool = True,
-    model: str = "qwen3.5:9b",
+    model: str | None = None,
     relevant_skills: list[dict] | None = None,
     attempt_num: int = 1,
     max_attempts: int = 3,
 ) -> str:
     """Generates Blender 4.5 Python script.
-    Primary pathway: local Qwen (qwen3.5:9b) generating creative, customized 3D meshes.
+    Primary pathway: local LLM generating creative, customized 3D meshes.
     Fallback pathway: procedural geometric mesh if LLM service is offline or on final attempt exhaustion.
     """
     if use_llm:
         try:
             gw = get_llm_gateway()
+            target_model = model or gw.default_model
             if gw.is_available():
-                logger.info("Synthesizing 3D model with LLM (%s) for prompt: %s (attempt %d/%d)", model, goal, attempt_num, max_attempts)
+                logger.info("Synthesizing 3D model with LLM (%s) for prompt: %s (attempt %d/%d)", target_model, goal, attempt_num, max_attempts)
                 code = gw.generate_blender_code(
                     goal=goal,
                     output_obj_path=output_obj_path,
                     anti_patterns=anti_patterns,
-                    model=model,
+                    model=target_model,
                     relevant_skills=relevant_skills,
                 )
                 import ast

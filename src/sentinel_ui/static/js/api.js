@@ -39,7 +39,12 @@ export const api = {
   getModels: async () => {
     const data = await request('/api/models');
     if (Array.isArray(data)) return data;
-    return data?.available_models || [];
+    const active = data?.active_model;
+    const list = data?.available_models || [];
+    if (active && list.includes(active)) {
+      return [active, ...list.filter((m) => m !== active)];
+    }
+    return active ? [active, ...list] : list;
   },
 
   // Tasks & Dispatch
