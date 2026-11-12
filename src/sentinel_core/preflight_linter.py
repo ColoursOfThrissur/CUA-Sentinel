@@ -40,15 +40,49 @@ class PreFlightLinter:
         if modified_code != code:
             applied.append("Dedented leading whitespace from generated script")
 
-        # 1. Syntax check first
+        # 1. Syntax check first with truncation self-repair
         try:
             ast.parse(modified_code)
         except SyntaxError as e:
-            return PreFlightResult(
-                code=code,
-                modified=False,
-                fatal_error=f"SyntaxError in generated script: {e.msg} at line {e.lineno}",
+            # Check if trimming truncated incomplete tail lines heals the script
+            lines = modified_code.splitlines()
+            healed = False
+            for _ in range(min(5, len(lines))):
+                lines.pop()
+                test_code = "\n".join(lines).strip()
+                try:
+                    ast.parse(test_code)
+                    modified_code = test_code
+                    applied.append("Healed truncated trailing syntax error from token limit")
+                    healed = True
+                    break
+                except SyntaxError:
+                    continue
+            if not healed:
+                return PreFlightResult(
+                    code=code,
+                    modified=False,
+                    fatal_error=f"SyntaxError in generated script: {e.msg} at line {e.lineno}",
+                )
+
+        # 1b. Fix unassigned obj_data variable references
+        if "obj_data.materials" in modified_code and "obj_data =" not in modified_code:
+            modified_code = re.sub(
+                r"\bobj_data\.materials\.append\b",
+                "bpy.context.active_object.data.materials.append",
+                modified_code,
             )
+            applied.append("Sanitized undefined obj_data to bpy.context.active_object.data")
+
+        # 1c. Sanitize unlinked bpy.data.objects.new calls
+        if "bpy.data.objects.new" in modified_code and "collection.link" not in modified_code:
+            modified_code = re.sub(
+                r"^\s*\w+\s*=\s*bpy\.data\.objects\.new\(.*?\)\s*$",
+                "# \\g<0> (Auto-disabled: unlinked object creation)",
+                modified_code,
+                flags=re.MULTILINE,
+            )
+            applied.append("Disabled unlinked bpy.data.objects.new call")
 
         # 2. Blender 4.0+ Export Operator rewrite
         # bpy.ops.export_scene.obj(filepath=...) -> bpy.ops.wm.obj_export(filepath=...)

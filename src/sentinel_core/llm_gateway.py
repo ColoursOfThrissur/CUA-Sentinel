@@ -110,30 +110,42 @@ class LLMGateway:
             raise RuntimeError(f"Ollama connection error ({target_model}): {e}") from e
 
     def extract_python_code(self, raw_text: str) -> str:
-        """Extracts python code from markdown blocks or plain text with automatic dedenting."""
+        """Extracts python code from markdown blocks or plain text with automatic dedenting and truncation healing."""
         # 1. Match ```python ... ```
         m = re.search(r"```python\s*(.*?)\s*```", raw_text, re.DOTALL | re.IGNORECASE)
+        code = None
         if m:
-            return textwrap.dedent(m.group(1)).strip()
-        # 2. Match generic ``` ... ```
-        m2 = re.search(r"```\s*(.*?)\s*```", raw_text, re.DOTALL)
-        if m2:
-            return textwrap.dedent(m2.group(1)).strip()
-        # 3. Handle unclosed ```python block
-        m3 = re.search(r"```(?:python)?\s*(.*)", raw_text, re.DOTALL | re.IGNORECASE)
-        if m3 and ("def " in raw_text or "import " in raw_text or "class " in raw_text):
+            code = textwrap.dedent(m.group(1)).strip()
+        elif (m2 := re.search(r"```\s*(.*?)\s*```", raw_text, re.DOTALL)):
+            code = textwrap.dedent(m2.group(1)).strip()
+        elif (m3 := re.search(r"```(?:python)?\s*(.*)", raw_text, re.DOTALL | re.IGNORECASE)) and ("def " in raw_text or "import " in raw_text or "class " in raw_text):
             cleaned = m3.group(1).strip()
             if cleaned.endswith("```"):
                 cleaned = cleaned[:-3].strip()
-            return textwrap.dedent(cleaned).strip()
-        # 4. Clean up raw text if lines resemble python
-        lines = []
-        for line in raw_text.splitlines():
-            # Filter out non-code commentary if outside code blocks
-            if line.strip().startswith(("Here is", "Sure,", "I have", "Note:")):
-                continue
-            lines.append(line)
-        return textwrap.dedent("\n".join(lines)).strip()
+            code = textwrap.dedent(cleaned).strip()
+        else:
+            lines = []
+            for line in raw_text.splitlines():
+                if line.strip().startswith(("Here is", "Sure,", "I have", "Note:")):
+                    continue
+                lines.append(line)
+            code = textwrap.dedent("\n".join(lines)).strip()
+
+        # AST-guided trailing truncation self-repair:
+        # If output was cut off mid-line by token exhaustion, trim trailing incomplete lines
+        if code:
+            lines = code.splitlines()
+            import ast
+            while len(lines) > 3:
+                try:
+                    ast.parse("\n".join(lines))
+                    break
+                except SyntaxError:
+                    lines.pop()
+            if len(lines) > 3:
+                code = "\n".join(lines).strip()
+
+        return code or ""
 
     def generate_blender_code(
         self,
@@ -171,7 +183,7 @@ class LLMGateway:
             "   bsdf.inputs['Base Color'].default_value = (R, G, B, 1.0)  # floats 0-1\n"
             "   bsdf.inputs['Metallic'].default_value = 0.0  # 0=plastic, 1=metal\n"
             "   bsdf.inputs['Roughness'].default_value = 0.5\n"
-            "   obj.data.materials.append(mat)\n"
+            "   obj.data.materials.append(mat)  # ALWAYS use obj.data.materials, NEVER bare 'obj_data'!\n"
             "5. For interesting results, optionally add modifiers BEFORE the export (apply them first):\n"
             "   mod = obj.modifiers.new(name='Bevel', type='BEVEL'); mod.width=0.05; mod.segments=2\n"
             "   bpy.context.view_layer.objects.active = obj; bpy.ops.object.modifier_apply(modifier='Bevel')\n"
@@ -207,6 +219,7 @@ class LLMGateway:
             system=system_instruction,
             model=model or self.default_model,
             temperature=0.2,
+            max_tokens=4096,
         )
 
         extracted_code = self.extract_python_code(raw_response)

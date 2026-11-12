@@ -786,7 +786,7 @@ def execute_domain_step(
             return call_res.get("result", {})
 
         if domain == "3d":
-            logger.info("Executing 3D synthesis via LLM (%s) attempt %d", selected_model, attempt_num)
+            logger.info("Executing 3D synthesis via LLM (%s) attempt %d/%d", selected_model, attempt_num, max_attempts)
             rel_skills = skill_bank.find_relevant_skills(goal, domain="3d", limit=3)
             blender_script = synthesize_blender_script(
                 goal=goal,
@@ -795,11 +795,17 @@ def execute_domain_step(
                 use_llm=True,
                 model=selected_model,
                 relevant_skills=rel_skills,
+                attempt_num=attempt_num,
+                max_attempts=max_attempts,
             )
             preflight = PreFlightLinter.sanitize(blender_script, domain="3d")
             if preflight.fatal_error:
-                logger.warning("PreFlightLinter fatal error in 3D script (%s). Falling back to procedural synthesis.", preflight.fatal_error)
-                blender_script = synthesize_procedural_fallback(goal, str(expected_artifact))
+                logger.warning("PreFlightLinter fatal error in 3D script (%s) on attempt %d/%d.", preflight.fatal_error, attempt_num, max_attempts)
+                if attempt_num >= max_attempts:
+                    logger.info("Engaging procedural fallback on final attempt exhaustion.")
+                    blender_script = synthesize_procedural_fallback(goal, str(expected_artifact))
+                else:
+                    blender_script = preflight.code
             else:
                 blender_script = preflight.code
                 if preflight.applied_fixes:
@@ -810,15 +816,17 @@ def execute_domain_step(
                 "output_obj_path": str(expected_artifact),
             })
 
-            # High-Assurance Self-Healing: If Blender execution failed or produced a missing/empty OBJ, engage procedural fallback
+            # High-Assurance Self-Healing: If Blender execution failed or produced a missing/empty OBJ on terminal attempt
             if res.get("exit_code") != 0 or not expected_artifact.exists() or expected_artifact.stat().st_size < 100:
-                logger.warning("Blender execution failed (exit %s) or artifact degenerate. Engaging procedural fallback.", res.get("exit_code"))
-                fallback_script = synthesize_procedural_fallback(goal, str(expected_artifact))
-                res = run_tool_fenced("blender_run_python", {
-                    "script_code": fallback_script,
-                    "output_obj_path": str(expected_artifact),
-                })
-                blender_script = fallback_script
+                logger.warning("Blender execution failed (exit %s) or artifact degenerate on attempt %d/%d.", res.get("exit_code"), attempt_num, max_attempts)
+                if attempt_num >= max_attempts:
+                    logger.info("Engaging procedural fallback on final attempt exhaustion.")
+                    fallback_script = synthesize_procedural_fallback(goal, str(expected_artifact))
+                    res = run_tool_fenced("blender_run_python", {
+                        "script_code": fallback_script,
+                        "output_obj_path": str(expected_artifact),
+                    })
+                    blender_script = fallback_script
 
             return {
                 "tool_result": res,
@@ -919,7 +927,26 @@ def execute_domain_step(
     def verifier(output: dict) -> VerificationResult:
         p = Path(output.get("artifact_path", ""))
         if domain == "3d":
-            return verification_gate.verify_obj_geometry(p, min_vertices=10, min_faces=5)
+            v_res = verification_gate.verify_obj_geometry(p, min_vertices=10, min_faces=5)
+            if not v_res.passed:
+                return v_res
+            # Anti-Dummy safeguard: Ensure model is not merely the unspecialized abstract cylinder+cube+sphere fallback
+            try:
+                if p.exists():
+                    with open(p, "r", encoding="utf-8", errors="ignore") as f:
+                        obj_names = [line.strip()[2:].strip() for line in f if line.startswith("o ")]
+                    is_dummy = set(obj_names) == {"Cylinder", "Cube", "Sphere"} or obj_names == ["Cylinder", "Cube", "Sphere"]
+                    if is_dummy and not all(w in lower_goal for w in ["cylinder", "cube", "sphere"]):
+                        return VerificationResult(
+                            passed=False,
+                            error_category="GENERIC_DUMMY_FALLBACK_DETECTED",
+                            error_signature="AbstractDummyFallbackMesh",
+                            details={"objects": obj_names},
+                            lesson="The generated 3D model consists only of the unspecialized fallback primitives (cylinder, cube, sphere). You must synthesize specialized geometry with proper components and materials matching the goal.",
+                        )
+            except Exception:
+                pass
+            return v_res
         elif domain == "code":
             expected_syms = []
             if "lru" in lower_goal:
