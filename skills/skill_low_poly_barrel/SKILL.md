@@ -2,11 +2,11 @@
 name: skill_low_poly_barrel
 description: Auto-synthesized skill for: Create a 3D low-poly barrel in Blender
 domain: 3d
-version: 1
-verified_at: 1794458734.026777
+version: 2
+verified_at: 1794460646.8320453
 effect_class: READ_ONLY
 ---
-# skill_low_poly_barrel (v1)
+# skill_low_poly_barrel (v2)
 Auto-synthesized skill for: Create a 3D low-poly barrel in Blender
 
 ## Parameters
@@ -73,7 +73,6 @@ for obj in bpy.context.scene.objects:
         obj.data.materials.append(mat_metal)
 
 # Export Wavefront OBJ
-bpy.ops.wm.obj_export(filepath=r"G:/Sentinel_Workspace/task_1794458691.obj")
+bpy.ops.wm.obj_export(filepath=r"G:/Sentinel_Workspace/task_1794460585.obj")
 print("SENTINEL_3D_MODEL_EXPORTED_OK")
-
 ```

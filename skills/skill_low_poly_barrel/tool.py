@@ -55,5 +55,5 @@ for obj in bpy.context.scene.objects:
         obj.data.materials.append(mat_metal)
 
 # Export Wavefront OBJ
-bpy.ops.wm.obj_export(filepath=r"G:/Sentinel_Workspace/task_1794458691.obj")
+bpy.ops.wm.obj_export(filepath=r"G:/Sentinel_Workspace/task_1794460585.obj")
 print("SENTINEL_3D_MODEL_EXPORTED_OK")

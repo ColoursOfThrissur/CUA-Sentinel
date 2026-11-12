@@ -991,28 +991,33 @@ def dispatch_task(req: TaskDispatchRequest):
 
     effective_agent = req.agent_id
     domain = None
-    if effective_agent and effective_agent != "auto":
-        manifest = agent_registry.get_manifest(effective_agent)
-        if manifest and manifest.capabilities:
-            cap = manifest.capabilities[0]
-            if "3d" in cap:
-                domain = "3d"
-            elif "data" in cap:
-                domain = "data"
-            elif "code" in cap:
-                domain = "code"
-            elif "report" in cap or "analysis" in cap:
-                domain = "report"
+    manifest = agent_registry.get_manifest(effective_agent) if effective_agent and effective_agent != "auto" else None
+    if not manifest:
+        effective_agent = None
 
-    if not domain:
-        if any(w in lower_goal for w in [
-            "3d", "blender", "model", "sword", "mug", "spaceship", "tree", "chair", "monkey", "mesh",
-            "build", "turret", "gatling", "cylinder", "cube", "sphere", "torus", "geometry", "sculpture",
-            "gun", "barrel", "mount", "bracket", "pillar", "shaft", "car", "robot", "cannon", "shield",
-            "armor", "helmet", "ring", "table", "lamp", "building", "castle", "plane", "rifle", "dagger",
-            "warhammer"
-        ]):
+    if manifest and manifest.capabilities:
+        cap = manifest.capabilities[0]
+        if "3d" in cap:
             domain = "3d"
+        elif "data" in cap:
+            domain = "data"
+        elif "code" in cap:
+            domain = "code"
+        elif "report" in cap or "analysis" in cap:
+            domain = "report"
+
+    # Infer domain from goal keywords if not set or if prompt strongly dictates domain
+    is_3d_goal = any(w in lower_goal for w in [
+        "3d", "blender", "model", "sword", "mug", "spaceship", "tree", "chair", "monkey", "mesh",
+        "build", "turret", "gatling", "cylinder", "cube", "sphere", "torus", "geometry", "sculpture",
+        "gun", "barrel", "mount", "bracket", "pillar", "shaft", "car", "robot", "cannon", "shield",
+        "armor", "helmet", "ring", "table", "lamp", "building", "castle", "plane", "rifle", "dagger",
+        "warhammer"
+    ])
+    if not domain or (is_3d_goal and "blender_run_python" not in (manifest.allowed_organs if manifest else [])):
+        if is_3d_goal:
+            domain = "3d"
+            effective_agent = "blender_artisan"
         elif any(w in lower_goal for w in ["csv", "table", "dataset", "dataframe", "rows", "columns", "spreadsheet", "sales"]):
             domain = "data"
         elif any(w in lower_goal for w in ["code", "python script", "function", "class", "algorithm", "program", "script", "write code"]):
