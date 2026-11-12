@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import ast
 import re
+import textwrap
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -35,7 +36,9 @@ class PreFlightLinter:
     @classmethod
     def _sanitize_blender(cls, code: str) -> PreFlightResult:
         applied = []
-        modified_code = code
+        modified_code = textwrap.dedent(code).strip()
+        if modified_code != code:
+            applied.append("Dedented leading whitespace from generated script")
 
         # 1. Syntax check first
         try:

@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import textwrap
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -109,22 +110,22 @@ class LLMGateway:
             raise RuntimeError(f"Ollama connection error ({target_model}): {e}") from e
 
     def extract_python_code(self, raw_text: str) -> str:
-        """Extracts python code from markdown blocks or plain text."""
+        """Extracts python code from markdown blocks or plain text with automatic dedenting."""
         # 1. Match ```python ... ```
         m = re.search(r"```python\s*(.*?)\s*```", raw_text, re.DOTALL | re.IGNORECASE)
         if m:
-            return m.group(1).strip()
+            return textwrap.dedent(m.group(1)).strip()
         # 2. Match generic ``` ... ```
         m2 = re.search(r"```\s*(.*?)\s*```", raw_text, re.DOTALL)
         if m2:
-            return m2.group(1).strip()
+            return textwrap.dedent(m2.group(1)).strip()
         # 3. Handle unclosed ```python block
         m3 = re.search(r"```(?:python)?\s*(.*)", raw_text, re.DOTALL | re.IGNORECASE)
         if m3 and ("def " in raw_text or "import " in raw_text or "class " in raw_text):
             cleaned = m3.group(1).strip()
             if cleaned.endswith("```"):
                 cleaned = cleaned[:-3].strip()
-            return cleaned
+            return textwrap.dedent(cleaned).strip()
         # 4. Clean up raw text if lines resemble python
         lines = []
         for line in raw_text.splitlines():
@@ -132,7 +133,7 @@ class LLMGateway:
             if line.strip().startswith(("Here is", "Sure,", "I have", "Note:")):
                 continue
             lines.append(line)
-        return "\n".join(lines).strip()
+        return textwrap.dedent("\n".join(lines)).strip()
 
     def generate_blender_code(
         self,

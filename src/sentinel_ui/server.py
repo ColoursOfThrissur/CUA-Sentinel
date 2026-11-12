@@ -44,7 +44,7 @@ from sentinel_broker.broker import ExecutionBroker
 from sentinel_broker.organs.sensory import register_sensory_organs
 from sentinel_broker.organs.motor import register_motor_organs
 from sentinel_broker.organs.blender import register_blender_organs
-from sentinel_broker.organs.blender_prompts import synthesize_blender_script
+from sentinel_broker.organs.blender_prompts import synthesize_blender_script, synthesize_procedural_fallback
 from sentinel_broker.organs.data_organ import register_data_organs
 from sentinel_broker.organs.web_organ import register_web_organs
 from sentinel_broker.organs.desktop_organ import register_desktop_organs
@@ -797,14 +797,29 @@ def execute_domain_step(
                 relevant_skills=rel_skills,
             )
             preflight = PreFlightLinter.sanitize(blender_script, domain="3d")
-            blender_script = preflight.code
-            if preflight.applied_fixes:
-                logger.info("PreFlightLinter sanitized 3D script: %s", preflight.applied_fixes)
+            if preflight.fatal_error:
+                logger.warning("PreFlightLinter fatal error in 3D script (%s). Falling back to procedural synthesis.", preflight.fatal_error)
+                blender_script = synthesize_procedural_fallback(goal, str(expected_artifact))
+            else:
+                blender_script = preflight.code
+                if preflight.applied_fixes:
+                    logger.info("PreFlightLinter sanitized 3D script: %s", preflight.applied_fixes)
 
             res = run_tool_fenced("blender_run_python", {
                 "script_code": blender_script,
                 "output_obj_path": str(expected_artifact),
             })
+
+            # High-Assurance Self-Healing: If Blender execution failed or produced a missing/empty OBJ, engage procedural fallback
+            if res.get("exit_code") != 0 or not expected_artifact.exists() or expected_artifact.stat().st_size < 100:
+                logger.warning("Blender execution failed (exit %s) or artifact degenerate. Engaging procedural fallback.", res.get("exit_code"))
+                fallback_script = synthesize_procedural_fallback(goal, str(expected_artifact))
+                res = run_tool_fenced("blender_run_python", {
+                    "script_code": fallback_script,
+                    "output_obj_path": str(expected_artifact),
+                })
+                blender_script = fallback_script
+
             return {
                 "tool_result": res,
                 "artifact_path": str(expected_artifact),

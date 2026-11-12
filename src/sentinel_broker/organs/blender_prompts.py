@@ -40,7 +40,7 @@ bpy.ops.wm.obj_export(filepath=r"{escaped_path}")
 print("SENTINEL_3D_MODEL_EXPORTED_OK")
 """
 
-    if "gatling" in g or "turret" in g or "gun" in g or "barrel" in g:
+    if "gatling" in g or "turret" in g or ("gun" in g and "barrel" in g):
         mesh_code = """
 # 1. Mount Base
 bpy.ops.mesh.primitive_cylinder_add(radius=2.5, depth=0.4, location=(0, 0, 0.2))
@@ -81,6 +81,104 @@ for i in range(6):
 
 # 6. Barrel Braces (Torus halfway down)
 bpy.ops.mesh.primitive_torus_add(major_radius=0.42, minor_radius=0.03, location=(0, 2.75, 1.8), rotation=(math.radians(90), 0, 0))
+"""
+    elif "barrel" in g or "keg" in g or "drum" in g:
+        mesh_code = """
+# 1. Main Barrel Body (cylinder with slight bevel/subdivision)
+bpy.ops.mesh.primitive_cylinder_add(radius=1.0, depth=2.4, location=(0, 0, 1.2), vertices=16)
+barrel = bpy.context.active_object
+barrel.name = "Barrel_Body"
+
+# Bevel modifier for wooden slats
+mod = barrel.modifiers.new(name="Bevel", type='BEVEL')
+mod.width = 0.06
+mod.segments = 2
+bpy.ops.object.modifier_apply(modifier="Bevel")
+
+# 2. Reinforcement Metal Hoops (4 rings)
+for z_pos in [0.4, 0.85, 1.55, 2.0]:
+    bpy.ops.mesh.primitive_torus_add(major_radius=1.03, minor_radius=0.035, location=(0, 0, z_pos))
+    hoop = bpy.context.active_object
+    hoop.name = f"Metal_Hoop_{z_pos}"
+
+# 3. Top and Bottom Lids
+bpy.ops.mesh.primitive_cylinder_add(radius=0.92, depth=0.1, location=(0, 0, 2.35), vertices=16)
+lid_top = bpy.context.active_object
+lid_top.name = "Barrel_Lid_Top"
+
+bpy.ops.mesh.primitive_cylinder_add(radius=0.92, depth=0.1, location=(0, 0, 0.05), vertices=16)
+lid_bottom = bpy.context.active_object
+lid_bottom.name = "Barrel_Lid_Bottom"
+
+# Materials: Oak wood and forged metal
+mat_wood = bpy.data.materials.new(name="Barrel_Wood")
+mat_wood.use_nodes = True
+bsdf_w = mat_wood.node_tree.nodes.get("Principled BSDF")
+if bsdf_w:
+    bsdf_w.inputs["Base Color"].default_value = (0.55, 0.35, 0.18, 1.0)
+    bsdf_w.inputs["Roughness"].default_value = 0.6
+
+mat_metal = bpy.data.materials.new(name="Barrel_Metal")
+mat_metal.use_nodes = True
+bsdf_m = mat_metal.node_tree.nodes.get("Principled BSDF")
+if bsdf_m:
+    bsdf_m.inputs["Base Color"].default_value = (0.22, 0.22, 0.25, 1.0)
+    bsdf_m.inputs["Metallic"].default_value = 0.9
+    bsdf_m.inputs["Roughness"].default_value = 0.3
+
+barrel.data.materials.append(mat_wood)
+lid_top.data.materials.append(mat_wood)
+lid_bottom.data.materials.append(mat_wood)
+for obj in bpy.context.scene.objects:
+    if "Metal_Hoop" in obj.name:
+        obj.data.materials.append(mat_metal)
+"""
+    elif "crate" in g or "chest" in g or "box" in g:
+        mesh_code = """
+bpy.ops.mesh.primitive_cube_add(size=1.8, location=(0, 0, 0.9))
+crate = bpy.context.active_object
+crate.name = "Crate_Body"
+
+# Corner brackets
+for x in [-0.9, 0.9]:
+    for y in [-0.9, 0.9]:
+        bpy.ops.mesh.primitive_cube_add(size=0.2, location=(x, y, 0.9))
+        bracket = bpy.context.active_object
+        bracket.scale = (1.0, 1.0, 9.0)
+        bpy.ops.object.transform_apply(scale=True)
+"""
+    elif "tree" in g or "pine" in g or "plant" in g:
+        mesh_code = """
+# Trunk
+bpy.ops.mesh.primitive_cylinder_add(radius=0.25, depth=1.6, location=(0, 0, 0.8))
+trunk = bpy.context.active_object
+trunk.name = "Tree_Trunk"
+
+# Foliage Cones
+for i, z in enumerate([1.6, 2.4, 3.1]):
+    r = 1.3 - (i * 0.3)
+    bpy.ops.mesh.primitive_cone_add(radius1=r, depth=1.4, location=(0, 0, z))
+    cone = bpy.context.active_object
+    cone.name = f"Foliage_Layer_{i+1}"
+"""
+    elif "chair" in g or "stool" in g:
+        mesh_code = """
+# Seat
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 1.0))
+seat = bpy.context.active_object
+seat.scale = (1.0, 1.0, 0.1)
+bpy.ops.object.transform_apply(scale=True)
+
+# 4 Legs
+for x in [-0.4, 0.4]:
+    for y in [-0.4, 0.4]:
+        bpy.ops.mesh.primitive_cylinder_add(radius=0.04, depth=1.0, location=(x, y, 0.5))
+
+# Backrest
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, -0.45, 1.6))
+back = bpy.context.active_object
+back.scale = (0.9, 0.08, 0.6)
+bpy.ops.object.transform_apply(scale=True)
 """
     elif "sword" in g or "blade" in g or "dagger" in g:
         mesh_code = """
@@ -164,7 +262,12 @@ def synthesize_blender_script(
                     model=model,
                     relevant_skills=relevant_skills,
                 )
-                return code
+                import ast
+                try:
+                    ast.parse(code)
+                    return code
+                except SyntaxError as syn_err:
+                    logger.warning("LLM generated invalid Python syntax (%s). Falling back to procedural synthesis.", syn_err)
             else:
                 logger.warning("Ollama unavailable at endpoint. Falling back to procedural synthesis.")
         except Exception as e:
