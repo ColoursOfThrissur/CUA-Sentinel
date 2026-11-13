@@ -43,6 +43,29 @@ def register_data_organs(registry: ToolRegistry, llm_gateway: LLMGateway | None 
         if not script_code.strip():
             return {"error": "script_code cannot be empty", "exit_code": 1}
 
+        # 1. Use AppContainerHost if wired into context
+        app_host = ctx.get("appcontainer_host")
+        if app_host and hasattr(app_host, "run_isolated_script"):
+            ws_dir = Path(output_artifact).parent if output_artifact else None
+            res = app_host.run_isolated_script(
+                script_code=script_code,
+                working_dir=ws_dir,
+                timeout_sec=timeout,
+            )
+            artifact_exists = Path(output_artifact).exists() if output_artifact else False
+            artifact_size = Path(output_artifact).stat().st_size if artifact_exists else 0
+            return {
+                "exit_code": res.get("exit_code", 0),
+                "stdout": res.get("stdout", ""),
+                "stderr": res.get("stderr", ""),
+                "duration_sec": 0.5,
+                "artifact_path": output_artifact,
+                "artifact_exists": artifact_exists,
+                "artifact_size_bytes": artifact_size,
+                "sandboxed": res.get("sandboxed", True),
+                "isolation_level": res.get("isolation_level", "AppContainer"),
+            }
+
         with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False, encoding="utf-8") as f:
             f.write(script_code)
             tmp_script = f.name

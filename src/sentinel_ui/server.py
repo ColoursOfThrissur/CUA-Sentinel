@@ -3,11 +3,13 @@ Serves real-time telemetry, configuration management, mistake inspection, and in
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -15,9 +17,9 @@ src_dir = Path(__file__).parent.parent.resolve()
 if str(src_dir) not in sys.path:
     sys.path.insert(0, str(src_dir))
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import psutil
@@ -56,10 +58,19 @@ from sentinel_core.contract_library import ContractLibrary
 from sentinel_core.prompt_scaffolder import PromptScaffolder, ScaffoldingLevel
 from sentinel_adaptive.pilot_controller import AdaptivePilotController
 from sentinel_adaptive.react_controller import ReActController
+from sentinel_ui.telemetry_stream import broadcaster
 
 logger = logging.getLogger("SentinelServer")
 
 app = FastAPI(title="Sentinel Control Plane", version="1.0.0")
+
+
+@app.on_event("startup")
+async def on_startup():
+    try:
+        broadcaster.set_loop(asyncio.get_running_loop())
+    except Exception as e:
+        logger.debug("TelemetryBroadcaster loop registration: %s", e)
 
 app.add_middleware(
     CORSMiddleware,
@@ -189,6 +200,7 @@ hybrid_gateway = HybridModelGateway(
 )
 active_cancellation_tokens: dict[str, threading.Event] = {}
 active_running_pids: dict[str, int] = {}
+pending_approvals: dict[str, dict[str, Any]] = {}
 
 
 def init_standard_agents():
@@ -387,6 +399,131 @@ def get_workspace_path():
         "workspace_dir": str(workspaces_dir.resolve()).replace("\\", "/"),
         "repo_workspace_dir": str(repo_workspaces_dir.resolve()).replace("\\", "/"),
     }
+
+
+# --- Real-Time Telemetry & Event Streaming (Pillar 1) ---
+
+@app.get("/api/events")
+async def event_stream_global(request: Request):
+    """Global SSE stream broadcasting real-time task states, tool invocations, and approvals."""
+    async def event_generator():
+        q = broadcaster.subscribe(None)
+        for item in broadcaster.get_recent_history(None, limit=20):
+            yield f"data: {json.dumps(item)}\n\n"
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    payload = await asyncio.wait_for(q.get(), timeout=15.0)
+                    yield f"data: {json.dumps(payload)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"
+        finally:
+            broadcaster.unsubscribe(q, None)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/api/tasks/{task_id}/events")
+async def event_stream_task(task_id: str, request: Request):
+    """Task-specific SSE stream for live agent thought/tool execution trace."""
+    async def event_generator():
+        q = broadcaster.subscribe(task_id)
+        for item in broadcaster.get_recent_history(task_id, limit=20):
+            yield f"data: {json.dumps(item)}\n\n"
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    payload = await asyncio.wait_for(q.get(), timeout=15.0)
+                    yield f"data: {json.dumps(payload)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"
+        finally:
+            broadcaster.unsubscribe(q, task_id)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# --- Human-in-the-Loop (HITL) Interactive Checkpoints (Pillar 2) ---
+
+class ApprovalResolutionRequest(BaseModel):
+    operator: str = "Operator"
+    reason: str = ""
+
+
+@app.get("/api/approvals")
+def list_pending_approvals():
+    """Lists all active tool approval checkpoints awaiting human clearance."""
+    items = []
+    for k, v in pending_approvals.items():
+        items.append({
+            "approval_id": v["approval_id"],
+            "task_id": v["task_id"],
+            "tool_name": v["tool_name"],
+            "params": v["params"],
+            "reason": v["reason"],
+            "created_at": v["created_at"],
+        })
+    return items
+
+
+@app.post("/api/approvals/{approval_id}/approve")
+def approve_pending_action(approval_id: str, req: ApprovalResolutionRequest | None = None):
+    """Operator approves a paused irreversible tool invocation."""
+    op = req.operator if req else "Operator"
+    rec = pending_approvals.get(approval_id)
+    if not rec:
+        for v in pending_approvals.values():
+            if v["task_id"] == approval_id:
+                rec = v
+                break
+    if not rec:
+        raise HTTPException(status_code=404, detail="No pending approval matching ID")
+
+    rec["decision"] = "APPROVED"
+    rec["operator"] = op
+    rec["event"].set()
+    logger.info("HITL Checkpoint %s approved by %s", rec["approval_id"], op)
+    return {"status": "APPROVED", "approval_id": rec["approval_id"], "task_id": rec["task_id"]}
+
+
+@app.post("/api/approvals/{approval_id}/deny")
+def deny_pending_action(approval_id: str, req: ApprovalResolutionRequest | None = None):
+    """Operator denies a paused irreversible tool invocation."""
+    op = req.operator if req else "Operator"
+    rec = pending_approvals.get(approval_id)
+    if not rec:
+        for v in pending_approvals.values():
+            if v["task_id"] == approval_id:
+                rec = v
+                break
+    if not rec:
+        raise HTTPException(status_code=404, detail="No pending approval matching ID")
+
+    rec["decision"] = "DENIED"
+    rec["operator"] = op
+    rec["event"].set()
+    logger.info("HITL Checkpoint %s denied by %s", rec["approval_id"], op)
+    return {"status": "DENIED", "approval_id": rec["approval_id"], "task_id": rec["task_id"]}
 
 
 class HybridRouteRequest(BaseModel):
@@ -746,6 +883,13 @@ def execute_domain_step(
 ) -> dict[str, Any]:
     cancel_evt = threading.Event()
     active_cancellation_tokens[task_id] = cancel_evt
+    broadcaster.emit("task_state", {
+        "task_id": task_id,
+        "state": "Running",
+        "goal": goal,
+        "domain": domain,
+        "agent": effective_agent,
+    }, task_id=task_id)
 
     lower_goal = goal.lower()
     if domain == "3d":
@@ -782,6 +926,7 @@ def execute_domain_step(
         def run_tool_fenced(tool_name: str, params: dict):
             if cancel_evt.is_set():
                 raise InterruptedError(f"Task '{task_id}' was cancelled by operator.")
+            broadcaster.emit("tool_call", {"tool_name": tool_name, "params": params}, task_id=task_id)
             if config.isolation.use_appcontainer and appcontainer_host:
                 logger.info("Executing tool '%s' under AppContainer isolation fence for agent '%s'", tool_name, effective_agent)
             call_res = broker.dispatch_call(
@@ -789,10 +934,99 @@ def execute_domain_step(
                 lease_token=lease,
                 tool_name=tool_name,
                 params=params,
-                context={"agent_id": effective_agent, "allow_irreversible": config.policy.allow_irreversible},
+                context={
+                    "agent_id": effective_agent,
+                    "allow_irreversible": config.policy.allow_irreversible,
+                    "enable_hitl": True,
+                    "appcontainer_host": appcontainer_host,
+                },
             )
+
+            # Interactive Human-In-The-Loop Checkpoint (Pillar 2)
+            if call_res.get("status") == "REQUIRES_APPROVAL":
+                approval_id = f"appr_{uuid.uuid4().hex[:8]}"
+                appr_evt = threading.Event()
+                appr_rec = {
+                    "approval_id": approval_id,
+                    "task_id": task_id,
+                    "attempt_id": att_id,
+                    "lease_token": lease,
+                    "tool_name": tool_name,
+                    "params": params,
+                    "reason": call_res.get("error", f"Irreversible tool '{tool_name}' requires explicit operator clearance"),
+                    "event": appr_evt,
+                    "decision": None,
+                    "operator": None,
+                    "created_at": time.time(),
+                }
+                pending_approvals[approval_id] = appr_rec
+                try:
+                    state_machine.transition_to_approval(
+                        task_id, att_id, lease,
+                        pending_action={"approval_id": approval_id, "tool_name": tool_name, "params": params},
+                        reason=appr_rec["reason"],
+                    )
+                except Exception as e:
+                    logger.warning("Could not transition to WaitingForApproval state: %s", e)
+
+                broadcaster.emit("hitl_requested", {
+                    "approval_id": approval_id,
+                    "task_id": task_id,
+                    "tool_name": tool_name,
+                    "params": params,
+                    "reason": appr_rec["reason"],
+                }, task_id=task_id)
+
+                # Await operator approval or task cancellation
+                waited = 0.0
+                while waited < 300.0:
+                    if cancel_evt.is_set():
+                        appr_rec["decision"] = "DENIED"
+                        break
+                    if appr_evt.wait(timeout=1.0):
+                        break
+                    waited += 1.0
+
+                pending_approvals.pop(approval_id, None)
+
+                if appr_rec.get("decision") == "APPROVED":
+                    try:
+                        state_machine.transition_from_approval(
+                            task_id, att_id, lease,
+                            approved=True,
+                            operator=appr_rec.get("operator", "Operator"),
+                            reason="Operator granted irreversible execution clearance",
+                        )
+                    except Exception as e:
+                        logger.warning("State machine transition_from_approval error: %s", e)
+
+                    broadcaster.emit("hitl_resolved", {"approval_id": approval_id, "approved": True}, task_id=task_id)
+                    call_res = broker.dispatch_call(
+                        attempt_id=att_id,
+                        lease_token=lease,
+                        tool_name=tool_name,
+                        params=params,
+                        context={"agent_id": effective_agent, "allow_irreversible": True, "appcontainer_host": appcontainer_host},
+                    )
+                else:
+                    try:
+                        state_machine.transition_from_approval(
+                            task_id, att_id, lease,
+                            approved=False,
+                            operator=appr_rec.get("operator", "Operator"),
+                            reason="Operator denied irreversible tool invocation",
+                        )
+                    except Exception as e:
+                        logger.warning("State machine transition_from_approval error: %s", e)
+
+                    broadcaster.emit("hitl_resolved", {"approval_id": approval_id, "approved": False}, task_id=task_id)
+                    raise PermissionError(f"Operator Denied Tool '{tool_name}' for Agent '{effective_agent}'")
+
             if not call_res.get("allowed", False):
+                broadcaster.emit("tool_error", {"tool_name": tool_name, "error": call_res.get("error")}, task_id=task_id)
                 raise PermissionError(f"PDP Denied Tool '{tool_name}' for Agent '{effective_agent}': {call_res.get('error')}")
+
+            broadcaster.emit("tool_result", {"tool_name": tool_name, "status": call_res.get("status")}, task_id=task_id)
             return call_res.get("result", {})
 
         if domain == "3d":
@@ -998,6 +1232,14 @@ def execute_domain_step(
             gui_info = tool_registry.execute_tool("blender_launch_gui", {"file_to_open": str(expected_artifact)})
         except Exception as e:
             gui_info = {"error": str(e)}
+
+    broadcaster.emit("task_state", {
+        "task_id": result.task.id,
+        "state": result.task.state.value,
+        "success": result.success,
+        "attempts_taken": result.attempts_taken,
+        "artifact_path": str(expected_artifact) if expected_artifact.exists() else None,
+    }, task_id=result.task.id)
 
     return {
         "task_id": result.task.id,

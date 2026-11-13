@@ -3,6 +3,7 @@ Enforces deterministic lifecycle transitions, monotonic attempt fencing, and ato
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from enum import Enum
@@ -16,6 +17,7 @@ from sentinel_core.side_effects import SideEffectLedger
 class TaskState(str, Enum):
     QUEUED = "Queued"
     RUNNING = "Running"
+    WAITING_FOR_APPROVAL = "WaitingForApproval"
     VERIFYING = "Verifying"
     SUCCEEDED = "Succeeded"
     FAILED = "Failed"
@@ -25,7 +27,8 @@ class TaskState(str, Enum):
 
 LEGAL_TRANSITIONS: dict[TaskState, set[TaskState]] = {
     TaskState.QUEUED: {TaskState.RUNNING, TaskState.FAILED, TaskState.CANCELLED},
-    TaskState.RUNNING: {TaskState.VERIFYING, TaskState.FAILED, TaskState.NEEDS_RECONCILIATION, TaskState.CANCELLED},
+    TaskState.RUNNING: {TaskState.WAITING_FOR_APPROVAL, TaskState.VERIFYING, TaskState.FAILED, TaskState.NEEDS_RECONCILIATION, TaskState.CANCELLED},
+    TaskState.WAITING_FOR_APPROVAL: {TaskState.RUNNING, TaskState.FAILED, TaskState.CANCELLED},
     TaskState.VERIFYING: {TaskState.SUCCEEDED, TaskState.RUNNING, TaskState.FAILED, TaskState.NEEDS_RECONCILIATION, TaskState.CANCELLED},
     TaskState.NEEDS_RECONCILIATION: {TaskState.QUEUED, TaskState.FAILED, TaskState.CANCELLED},
     TaskState.SUCCEEDED: set(),  # Terminal
@@ -136,6 +139,45 @@ class StateMachine:
 
         return self.get_task(task_id), lease
 
+    def transition_to_approval(
+        self,
+        task_id: str,
+        attempt_id: str,
+        lease_token: int,
+        pending_action: dict[str, Any] | None = None,
+        reason: str = "Operator authorization required",
+    ) -> TaskRecord:
+        """Transitions task from Running -> WaitingForApproval (HITL Checkpoint)."""
+        now = time.time()
+        with self.db.transaction() as c:
+            if not self.leases.is_lease_valid(attempt_id, lease_token):
+                raise StaleLeaseError(f"Attempt {attempt_id} with lease {lease_token} is stale or invalid")
+            action_desc = f": {json.dumps(pending_action)}" if pending_action else ""
+            task = self._assert_transition(
+                c, task_id, TaskState.WAITING_FOR_APPROVAL, f"{reason}{action_desc}", now
+            )
+        return task
+
+    def transition_from_approval(
+        self,
+        task_id: str,
+        attempt_id: str,
+        lease_token: int,
+        approved: bool = True,
+        operator: str = "operator",
+        reason: str = "Operator resolved checkpoint",
+    ) -> TaskRecord:
+        """Transitions task from WaitingForApproval -> Running (if approved) or Failed (if denied)."""
+        now = time.time()
+        target_state = TaskState.RUNNING if approved else TaskState.FAILED
+        with self.db.transaction() as c:
+            if not self.leases.is_lease_valid(attempt_id, lease_token):
+                raise StaleLeaseError(f"Attempt {attempt_id} with lease {lease_token} is stale or invalid")
+            task = self._assert_transition(
+                c, task_id, target_state, f"[{operator}] {reason}", now
+            )
+        return task
+
     def transition_to_verifying(self, task_id: str, attempt_id: str, lease_token: int) -> TaskRecord:
         """Transitions Running -> Verifying once worker finishes its work payload."""
         now = time.time()
@@ -220,7 +262,7 @@ class StateMachine:
         recovered = []
         now = time.time()
         with self.db.transaction() as c:
-            c.execute("SELECT id, state, attempt_count, max_attempts FROM tasks WHERE state IN ('Running', 'Verifying')")
+            c.execute("SELECT id, state, attempt_count, max_attempts FROM tasks WHERE state IN ('Running', 'Verifying', 'WaitingForApproval')")
             rows = c.fetchall()
             for r in rows:
                 task_id = r["id"]

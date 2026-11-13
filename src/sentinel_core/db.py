@@ -33,11 +33,15 @@ class SentinelDB:
     def _init_db(self):
         with self._get_connection() as conn:
             conn.executescript(SCHEMA_SQL)
-            # Automatic schema migration: ensure 'Cancelled' is permitted in tasks state CHECK constraint
+            # Automatic schema migration: ensure 'WaitingForApproval' and 'Cancelled' are permitted in tasks state CHECK constraint
             row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks'").fetchone()
-            if row and row[0] and "'Cancelled'" not in row[0]:
+            if row and row[0] and ("'WaitingForApproval'" not in row[0] or "'Cancelled'" not in row[0]):
                 conn.execute("PRAGMA foreign_keys=OFF;")
-                new_sql = row[0].replace("'NeedsReconciliation')", "'NeedsReconciliation', 'Cancelled')")
+                new_sql = row[0]
+                if "'WaitingForApproval'" not in new_sql:
+                    new_sql = new_sql.replace("'Running'", "'Running', 'WaitingForApproval'")
+                if "'Cancelled'" not in new_sql:
+                    new_sql = new_sql.replace("'NeedsReconciliation')", "'NeedsReconciliation', 'Cancelled')")
                 new_sql = new_sql.replace("CREATE TABLE tasks", "CREATE TABLE tasks_migrated_tmp")
                 conn.execute(new_sql)
                 conn.execute("INSERT INTO tasks_migrated_tmp SELECT * FROM tasks;")

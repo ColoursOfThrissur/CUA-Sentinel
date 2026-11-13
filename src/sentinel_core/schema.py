@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
     description TEXT,
-    state TEXT NOT NULL CHECK(state IN ('Queued', 'Running', 'Verifying', 'Succeeded', 'Failed', 'NeedsReconciliation', 'Cancelled')),
+    state TEXT NOT NULL CHECK(state IN ('Queued', 'Running', 'WaitingForApproval', 'Verifying', 'Succeeded', 'Failed', 'NeedsReconciliation', 'Cancelled')),
     attempt_count INTEGER NOT NULL DEFAULT 0,
     max_attempts INTEGER NOT NULL DEFAULT 3,
     created_at REAL NOT NULL,

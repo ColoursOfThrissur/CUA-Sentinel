@@ -77,4 +77,27 @@ export const api = {
 
   // Artifact Content Fetch
   fetchArtifact: (url) => fetch(url).then(r => r.text()),
+
+  // Human-in-the-Loop (HITL) Checkpoints
+  getApprovals: () => request('/api/approvals'),
+  approveAction: (approvalId) => request(`/api/approvals/${approvalId}/approve`, { method: 'POST' }),
+  denyAction: (approvalId) => request(`/api/approvals/${approvalId}/deny`, { method: 'POST' }),
+
+  // Real-Time Server-Sent Events (SSE) Stream
+  subscribeEvents: (onEvent, taskId = null) => {
+    const url = taskId ? `${BASE_URL}/api/tasks/${taskId}/events` : `${BASE_URL}/api/events`;
+    const es = new EventSource(url);
+    es.onmessage = (e) => {
+      try {
+        const payload = JSON.parse(e.data);
+        if (onEvent) onEvent(payload);
+      } catch (err) {
+        console.debug('SSE parse error:', err);
+      }
+    };
+    es.onerror = (err) => {
+      console.debug('SSE connection state:', es.readyState);
+    };
+    return es;
+  },
 };

@@ -26,6 +26,7 @@ export function App() {
 
   const [reactTrajectory, setReactTrajectory] = useState(null);
   const [activeViewportArtifact, setActiveViewportArtifact] = useState(null);
+  const [pendingApprovals, setPendingApprovals] = useState([]);
   const [isDispatching, setIsDispatching] = useState(false);
   const [isExecutingReAct, setIsExecutingReAct] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -34,7 +35,7 @@ export function App() {
   const loadAll = async () => {
     setRefreshing(true);
     try {
-      const [tel, tsk, ags, mods, tpls, runs, msts, sks, tls] = await Promise.allSettled([
+      const [tel, tsk, ags, mods, tpls, runs, msts, sks, tls, apprs] = await Promise.allSettled([
         api.getTelemetry(),
         api.getTasks(),
         api.getAgents(),
@@ -44,6 +45,7 @@ export function App() {
         api.getMistakes(),
         api.getSkills(),
         api.getTools(),
+        api.getApprovals(),
       ]);
 
       if (tel.status === 'fulfilled') setTelemetry(tel.value);
@@ -51,6 +53,7 @@ export function App() {
       if (ags.status === 'fulfilled') setAgents(ags.value);
       if (mods.status === 'fulfilled' && mods.value && mods.value.length > 0) setModels(mods.value);
       if (tpls.status === 'fulfilled') setDagTemplates(tpls.value);
+      if (apprs.status === 'fulfilled' && Array.isArray(apprs.value)) setPendingApprovals(apprs.value);
       if (runs.status === 'fulfilled') {
         setDagRuns(runs.value);
         if (runs.value && runs.value.length > 0 && !selectedDagRun) {
@@ -72,19 +75,64 @@ export function App() {
 
   useEffect(() => {
     loadAll();
+
+    // Real-Time Telemetry & Event Streaming (Pillar 1)
+    const es = api.subscribeEvents((event) => {
+      if (event.type === 'hitl_requested') {
+        api.getApprovals().then((apprs) => setPendingApprovals(apprs)).catch(() => {});
+      } else if (event.type === 'hitl_resolved') {
+        const resolvedId = event.data?.approval_id;
+        if (resolvedId) {
+          setPendingApprovals((prev) => prev.filter((a) => a.approval_id !== resolvedId));
+        }
+      } else if (event.type === 'task_state') {
+        api.getTasks().then((t) => setTasks(t)).catch(() => {});
+      }
+    });
+
     const interval = setInterval(async () => {
       try {
-        const [tel, tsk] = await Promise.all([api.getTelemetry(), api.getTasks()]);
+        const [tel, tsk, apprs] = await Promise.all([
+          api.getTelemetry(),
+          api.getTasks(),
+          api.getApprovals(),
+        ]);
         setTelemetry(tel);
         setTasks(tsk);
+        if (Array.isArray(apprs)) setPendingApprovals(apprs);
         if (selectedDagRun && (selectedDagRun.state === 'Running' || selectedDagRun.state === 'Pending')) {
           const updatedDag = await api.getDagStatus(selectedDagRun.id);
           setSelectedDagRun(updatedDag);
         }
       } catch (e) {}
     }, 2500);
-    return () => clearInterval(interval);
+
+    return () => {
+      clearInterval(interval);
+      if (es) es.close();
+    };
   }, [selectedDagRun]);
+
+  // HITL Checkpoint Handlers (Pillar 2)
+  const handleApprove = async (approvalId) => {
+    try {
+      await api.approveAction(approvalId);
+      setPendingApprovals((prev) => prev.filter((a) => a.approval_id !== approvalId));
+      loadAll();
+    } catch (e) {
+      alert('Error approving action: ' + e.message);
+    }
+  };
+
+  const handleDeny = async (approvalId) => {
+    try {
+      await api.denyAction(approvalId);
+      setPendingApprovals((prev) => prev.filter((a) => a.approval_id !== approvalId));
+      loadAll();
+    } catch (e) {
+      alert('Error denying action: ' + e.message);
+    }
+  };
 
   // Select DAG Run & fetch full steps
   const handleSelectRun = async (run) => {
@@ -226,6 +274,87 @@ export function App() {
         onRefresh=${loadAll}
         refreshing=${refreshing}
       />
+
+      <!-- Human-in-the-Loop (HITL) Checkpoint Banner -->
+      ${pendingApprovals.length > 0 && html`
+        <div style=${{
+          margin: '0.75rem 1.5rem',
+          padding: '1rem',
+          background: 'rgba(239, 68, 68, 0.12)',
+          border: '1px solid var(--accent-danger, #ef4444)',
+          borderRadius: '8px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '0.75rem',
+          zIndex: 100,
+        }}>
+          <div style=${{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style=${{ fontWeight: 'bold', color: 'var(--accent-danger, #ef4444)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              ⚠️ Human-in-the-Loop Checkpoint: Irreversible Tool Clearance Required
+            </span>
+            <span style=${{ fontSize: '0.75rem', opacity: 0.8 }}>
+              ${pendingApprovals.length} Action(s) Paused
+            </span>
+          </div>
+
+          ${pendingApprovals.map((appr) => html`
+            <div key=${appr.approval_id} style=${{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              background: 'rgba(0, 0, 0, 0.25)',
+              padding: '0.75rem 1rem',
+              borderRadius: '6px',
+            }}>
+              <div style=${{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                <span style=${{ fontSize: '0.9rem', fontWeight: 600 }}>
+                  Tool: <code style=${{ color: 'var(--accent-primary, #3b82f6)' }}>${appr.tool_name}</code>
+                  <span style=${{ opacity: 0.6, marginLeft: '0.75rem' }}>Task: ${appr.task_id}</span>
+                </span>
+                <span style=${{ fontSize: '0.8rem', opacity: 0.8 }}>
+                  ${appr.reason || 'Explicit operator approval required for execution'}
+                </span>
+                ${appr.params && Object.keys(appr.params).length > 0 && html`
+                  <span style=${{ fontSize: '0.75rem', opacity: 0.6, fontFamily: 'monospace' }}>
+                    Params: ${JSON.stringify(appr.params)}
+                  </span>
+                `}
+              </div>
+
+              <div style=${{ display: 'flex', gap: '0.5rem' }}>
+                <button
+                  onClick=${() => handleApprove(appr.approval_id)}
+                  style=${{
+                    background: 'var(--accent-success, #10b981)',
+                    color: '#fff',
+                    border: 'none',
+                    padding: '0.4rem 0.8rem',
+                    borderRadius: '4px',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Approve Execution
+                </button>
+                <button
+                  onClick=${() => handleDeny(appr.approval_id)}
+                  style=${{
+                    background: 'rgba(239, 68, 68, 0.2)',
+                    color: 'var(--accent-danger, #ef4444)',
+                    border: '1px solid var(--accent-danger, #ef4444)',
+                    padding: '0.4rem 0.8rem',
+                    borderRadius: '4px',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Deny
+                </button>
+              </div>
+            </div>
+          `)}
+        </div>
+      `}
 
       <!-- Main Spatial Canvas View Area -->
       <main className="canvas-container">

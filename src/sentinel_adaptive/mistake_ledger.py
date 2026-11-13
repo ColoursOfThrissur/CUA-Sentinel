@@ -11,13 +11,28 @@ import time
 from typing import Any
 
 from sentinel_core.db import SentinelDB
+from sentinel_core.vector_index import VectorIndex
 
 logger = logging.getLogger("SentinelMistakeMemory")
 
 
 class MistakeMemory:
-    def __init__(self, db: SentinelDB):
+    def __init__(self, db: SentinelDB, vector_index: VectorIndex | None = None):
         self.db = db
+        self.vector_index = vector_index or VectorIndex()
+        self._hydrate_vector_index()
+
+    def _hydrate_vector_index(self):
+        try:
+            rows = self.db.execute_read(
+                "SELECT id, task_id, error_category, error_signature, context, lesson_learned FROM mistake_ledger ORDER BY id DESC LIMIT 200"
+            )
+            for r in rows:
+                meta = dict(r)
+                text = f"{r.get('error_category', '')} {r.get('error_signature', '')} {r.get('lesson_learned', '')} {r.get('context', '')}"
+                self.vector_index.upsert(str(r["id"]), text, metadata=meta)
+        except Exception as e:
+            logger.debug("Mistake vector index hydration skipped: %s", e)
 
     def record_mistake(
         self,
@@ -38,7 +53,26 @@ class MistakeMemory:
                 """,
                 (task_id, attempt_id, error_category, error_signature, ctx_str, lesson_learned, now),
             )
-            return c.lastrowid
+            row_id = c.lastrowid
+
+        # Index in semantic vector memory
+        try:
+            self.vector_index.upsert(
+                str(row_id),
+                f"{error_category} {error_signature} {lesson_learned} {ctx_str}",
+                metadata={
+                    "id": row_id,
+                    "task_id": task_id,
+                    "error_category": error_category,
+                    "error_signature": error_signature,
+                    "lesson_learned": lesson_learned,
+                    "domain": context.get("domain", "") if isinstance(context, dict) else "",
+                },
+            )
+        except Exception as e:
+            logger.debug("Failed to index mistake in vector index: %s", e)
+
+        return row_id
 
     def classify_and_record_semantic_mistake(
         self,
@@ -95,10 +129,31 @@ class MistakeMemory:
         )
         return [dict(r) for r in rows]
 
-    def get_cross_task_lessons(self, domain: str = "", limit: int = 2) -> list[dict[str, Any]]:
+    def get_cross_task_lessons(self, domain: str = "", limit: int = 2, query: str = "") -> list[dict[str, Any]]:
         """Retrieves bounded, deduplicated lessons learned across past tasks in the same domain.
-        Strictly capped at top 2 entries and bounded token footprint (Upgrade D).
+        Uses semantic vector similarity if query is provided, otherwise falls back to frequency SQL.
+        Strictly capped at top entries and bounded token footprint.
         """
+        if query and self.vector_index.count() > 0:
+            def _filter(meta: dict[str, Any]) -> bool:
+                if not domain:
+                    return True
+                return domain.lower() in str(meta.get("domain", "")).lower() or not meta.get("domain")
+
+            matches = self.vector_index.query(query, top_k=limit, filter_fn=_filter)
+            if matches:
+                bounded = []
+                for m in matches:
+                    meta = m.get("metadata", {})
+                    raw_lesson = (meta.get("lesson_learned") or m.get("text", "")).strip().replace("\n", " ")
+                    bounded.append({
+                        "error_category": meta.get("error_category", "SEMANTIC_HEURISTIC"),
+                        "error_signature": meta.get("error_signature", ""),
+                        "lesson_learned": raw_lesson[:120] + ("..." if len(raw_lesson) > 120 else ""),
+                    })
+                return bounded
+
+        # Fallback to frequency SQL retrieval
         if domain:
             kw = f"%{domain}%"
             rows = self.db.execute_read(
@@ -117,7 +172,6 @@ class MistakeMemory:
                 "ORDER BY freq DESC, id DESC LIMIT ?",
                 (limit,),
             )
-        # Bounded formatting: truncate each lesson to 120 characters to prevent prompt bloat
         bounded = []
         for r in rows:
             d = dict(r)
@@ -126,11 +180,11 @@ class MistakeMemory:
             bounded.append(d)
         return bounded
 
-    def format_anti_pattern_prompt(self, task_id: str, domain: str = "") -> str:
+    def format_anti_pattern_prompt(self, task_id: str, domain: str = "", query: str = "") -> str:
         """Combines task-specific anti-patterns with strictly bounded cross-task memory."""
         task_mistakes = self.get_task_mistakes(task_id)
-        # Bounded cross-task memory: max 2 items
-        cross_lessons = self.get_cross_task_lessons(domain, limit=2)
+        # Bounded cross-task memory: max 2 items, retrieved semantically if query is given
+        cross_lessons = self.get_cross_task_lessons(domain, limit=2, query=query)
 
         if not task_mistakes and not cross_lessons:
             return ""

@@ -17,6 +17,7 @@ class AuthorizationDecision:
     allowed: bool
     status_code: str
     reason: str
+    requires_approval: bool = False
 
 
 class PolicyDecisionPoint:
@@ -79,6 +80,13 @@ class PolicyDecisionPoint:
 
         # 4. Policy Rule: IRREVERSIBLE tool authorization
         if is_irreversible and not ctx.get("allow_irreversible", False):
+            if ctx.get("enable_hitl", False):
+                return AuthorizationDecision(
+                    allowed=False,
+                    status_code="REQUIRES_APPROVAL",
+                    reason=f"Irreversible tool '{tool_name}' requires operator approval.",
+                    requires_approval=True,
+                )
             return AuthorizationDecision(
                 allowed=False,
                 status_code="REJECTED_IRREVERSIBLE_DENIED",

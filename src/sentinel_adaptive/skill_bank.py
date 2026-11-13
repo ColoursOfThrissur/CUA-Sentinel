@@ -17,6 +17,7 @@ from typing import Any
 from sentinel_core.db import SentinelDB
 from sentinel_core.side_effects import EffectClass
 from sentinel_broker.tool_registry import ToolRegistry
+from sentinel_core.vector_index import VectorIndex
 
 logger = logging.getLogger("SentinelSkillBank")
 
@@ -62,11 +63,23 @@ class SkillBank:
         db: SentinelDB,
         skills_dir: Path | str | None = None,
         tool_registry: ToolRegistry | None = None,
+        vector_index: VectorIndex | None = None,
     ):
         self.db = db
         self.skills_dir = Path(skills_dir) if skills_dir else Path("skills").resolve()
         self.skills_dir.mkdir(parents=True, exist_ok=True)
         self.tool_registry = tool_registry
+        self.vector_index = vector_index or VectorIndex()
+        self._hydrate_vector_index()
+
+    def _hydrate_vector_index(self):
+        try:
+            for s in self.list_skills():
+                meta_str = s.get("metadata", "{}")
+                text = f"{s.get('name', '')} {s.get('description', '')} {s.get('code', '')[:200]}"
+                self.vector_index.upsert(s["name"], text, metadata=s)
+        except Exception as e:
+            logger.debug("Skill vector index hydration skipped: %s", e)
 
     def distill_skill(
         self,
@@ -154,6 +167,13 @@ effect_class: {eff_str}
         if target_reg:
             self.register_single_skill_into_registry(skill_record, target_reg)
 
+        # 4. Index in semantic vector memory
+        try:
+            vec_text = f"{name} {description} {domain} {code[:200]}"
+            self.vector_index.upsert(name, vec_text, metadata=skill_record)
+        except Exception as e:
+            logger.debug("Failed to index skill in vector index: %s", e)
+
         logger.info("Distilled skill '%s' (v%d) into SkillBank.", name, v_num)
         return skill_record
 
@@ -192,6 +212,13 @@ effect_class: {eff_str}
         raw_words = re.findall(r"[a-z0-9_]+", clean_query)
         keywords = [w for w in raw_words if len(w) > 2 and w not in stop_words]
 
+        # Semantic vector similarity scores
+        vector_scores: dict[str, float] = {}
+        if self.vector_index.count() > 0:
+            v_matches = self.vector_index.query(clean_query, top_k=len(all_skills))
+            for vm in v_matches:
+                vector_scores[vm["id"]] = vm["score"]
+
         scored: list[tuple[float, dict[str, Any]]] = []
         for s in all_skills:
             score = 0.0
@@ -220,16 +247,19 @@ effect_class: {eff_str}
                 if kw in s_code:
                     kw_score += 1.5
 
-            # If user query provided keywords, require at least one keyword match
-            if keywords and kw_score == 0.0:
+            v_sim = vector_scores.get(s["name"], 0.0)
+
+            # Require keyword match or semantic cosine similarity above threshold
+            if keywords and kw_score == 0.0 and v_sim < 0.12:
                 continue
 
-            score += kw_score
+            score += kw_score + (max(0.0, v_sim) * 10.0)
 
             if score > 0:
                 s_copy = dict(s)
                 s_copy["domain"] = s_domain
-                s_copy["score"] = score
+                s_copy["score"] = round(score, 3)
+                s_copy["vector_similarity"] = round(v_sim, 4)
                 s_copy["folder"] = str(self.skills_dir / s["name"])
                 scored.append((score, s_copy))
 
