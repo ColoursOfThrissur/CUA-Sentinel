@@ -4,6 +4,7 @@ Manages SQLite in WAL mode with connection pooling, transactional context, and s
 from __future__ import annotations
 
 import contextlib
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any, Iterator
@@ -42,7 +43,8 @@ class SentinelDB:
                     new_sql = new_sql.replace("'Running'", "'Running', 'WaitingForApproval'")
                 if "'Cancelled'" not in new_sql:
                     new_sql = new_sql.replace("'NeedsReconciliation')", "'NeedsReconciliation', 'Cancelled')")
-                new_sql = new_sql.replace("CREATE TABLE tasks", "CREATE TABLE tasks_migrated_tmp")
+                new_sql = re.sub(r'CREATE TABLE\s+["\']?tasks["\']?', "CREATE TABLE tasks_migrated_tmp", new_sql, count=1, flags=re.IGNORECASE)
+                conn.execute("DROP TABLE IF EXISTS tasks_migrated_tmp;")
                 conn.execute(new_sql)
                 conn.execute("INSERT INTO tasks_migrated_tmp SELECT * FROM tasks;")
                 conn.execute("DROP TABLE tasks;")
@@ -54,7 +56,8 @@ class SentinelDB:
             if dag_row and dag_row[0] and "'Cancelled'" not in dag_row[0]:
                 conn.execute("PRAGMA foreign_keys=OFF;")
                 new_sql = dag_row[0].replace("'Failed')", "'Failed', 'Cancelled')")
-                new_sql = new_sql.replace("CREATE TABLE dag_runs", "CREATE TABLE dag_runs_migrated_tmp")
+                new_sql = re.sub(r'CREATE TABLE\s+["\']?dag_runs["\']?', "CREATE TABLE dag_runs_migrated_tmp", new_sql, count=1, flags=re.IGNORECASE)
+                conn.execute("DROP TABLE IF EXISTS dag_runs_migrated_tmp;")
                 conn.execute(new_sql)
                 conn.execute("INSERT INTO dag_runs_migrated_tmp SELECT * FROM dag_runs;")
                 conn.execute("DROP TABLE dag_runs;")
@@ -66,7 +69,8 @@ class SentinelDB:
             if step_row and step_row[0] and "'Cancelled'" not in step_row[0]:
                 conn.execute("PRAGMA foreign_keys=OFF;")
                 new_sql = step_row[0].replace("'Skipped')", "'Skipped', 'Cancelled')")
-                new_sql = new_sql.replace("CREATE TABLE dag_steps", "CREATE TABLE dag_steps_migrated_tmp")
+                new_sql = re.sub(r'CREATE TABLE\s+["\']?dag_steps["\']?', "CREATE TABLE dag_steps_migrated_tmp", new_sql, count=1, flags=re.IGNORECASE)
+                conn.execute("DROP TABLE IF EXISTS dag_steps_migrated_tmp;")
                 conn.execute(new_sql)
                 conn.execute("INSERT INTO dag_steps_migrated_tmp SELECT * FROM dag_steps;")
                 conn.execute("DROP TABLE dag_steps;")
