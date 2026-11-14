@@ -111,6 +111,26 @@ class PreFlightLinter:
             )
             applied.append("Sanitized deprecated Principled BSDF Specular input")
 
+        # 3b. Guard bpy.ops.object.mode_set so it doesn't crash if context has no active object
+        if "bpy.ops.object.mode_set" in modified_code:
+            modified_code = re.sub(
+                r"^\s*bpy\.ops\.object\.mode_set\s*\(\s*mode\s*=\s*(['\"][A-Z]+['\"])\s*\)\s*$",
+                r"if bpy.context.active_object and bpy.context.active_object.mode != \1:\n    bpy.ops.object.mode_set(mode=\1)",
+                modified_code,
+                flags=re.MULTILINE,
+            )
+            applied.append("Guarded bpy.ops.object.mode_set against missing active object")
+
+        # 3c. Guard bpy.ops.object.modifier_apply
+        if "bpy.ops.object.modifier_apply" in modified_code:
+            modified_code = re.sub(
+                r"^\s*bpy\.ops\.object\.modifier_apply\s*\(\s*modifier\s*=\s*(['\"][^'\"]+['\"])\s*\)\s*$",
+                r"if bpy.context.active_object and \1 in bpy.context.active_object.modifiers:\n    bpy.ops.object.modifier_apply(modifier=\1)",
+                modified_code,
+                flags=re.MULTILINE,
+            )
+            applied.append("Guarded bpy.ops.object.modifier_apply against missing modifier")
+
         # 4. Check/inject scene reset if missing
         if "bpy.ops.wm.read_factory_settings" not in modified_code:
             init_call = "import bpy\nbpy.ops.wm.read_factory_settings(use_empty=True)\n"

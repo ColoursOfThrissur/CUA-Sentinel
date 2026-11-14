@@ -177,6 +177,8 @@ class LLMGateway:
             "   CRITICAL RULES FOR OBJECT CREATION:\n"
             "   - The primitive operators automatically create and link the object into the scene.\n"
             "   - DO NOT call bpy.data.objects.new() or collection.link()! Just call primitive_*_add and grab obj = bpy.context.active_object.\n"
+            "   - DO NOT call bpy.ops.object.mode_set() unless an object is selected.\n"
+            "   - NEVER write fake placeholder comments, dummy lambda expressions, or unlinked mesh data.\n"
             "   - Rotations must be 3 floats: rotation=(math.radians(90), 0, 0). Never nest extra parentheses.\n"
             "4. ALWAYS assign a Principled BSDF material with a thematic base color to each object:\n"
             "   mat = bpy.data.materials.new(name='MyMat')\n"

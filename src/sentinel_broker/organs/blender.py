@@ -77,12 +77,29 @@ def register_blender_organs(registry: ToolRegistry):
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
             dur = time.time() - start_t
 
+            # Filter BlenderGIS / addon noise from stderr to isolate real tracebacks
+            raw_err = proc.stderr or ""
+            clean_err_lines = [
+                ln for ln in raw_err.splitlines()
+                if not ln.startswith("DEBUG:BlenderGIS") and not ln.startswith("DEBUG:") and ln.strip()
+            ]
+            clean_err = "\n".join(clean_err_lines)
+            if "Traceback (most recent call last):" in raw_err:
+                clean_err = "Traceback (most recent call last):" + raw_err.split("Traceback (most recent call last):", 1)[1]
+
+            has_traceback = (
+                "Traceback (most recent call last):" in raw_err
+                or "RuntimeError:" in raw_err
+                or "NameError:" in raw_err
+                or "AttributeError:" in raw_err
+            )
+
             result = {
-                "exit_code": proc.returncode,
+                "exit_code": 1 if has_traceback else proc.returncode,
                 "duration_sec": round(dur, 2),
                 "blender_path": blender_exe,
                 "stdout": proc.stdout[-2000:],
-                "stderr": proc.stderr[-1000:],
+                "stderr": clean_err[-1500:],
                 "artifact_created": False,
             }
 
@@ -92,6 +109,10 @@ def register_blender_organs(registry: ToolRegistry):
                     result["artifact_created"] = True
                     result["artifact_bytes"] = p.stat().st_size
                     result["artifact_path"] = str(p.resolve())
+                else:
+                    result["exit_code"] = 1
+                    if not result["stderr"]:
+                        result["stderr"] = f"Expected artifact '{p.name}' was not exported by the script"
 
             return result
         finally:

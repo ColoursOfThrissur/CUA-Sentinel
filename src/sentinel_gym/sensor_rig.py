@@ -84,12 +84,12 @@ try:
     imported_objs = [o for o in bpy.context.scene.objects if o.type == 'MESH']
 except Exception as e:
     with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump({{"error": f"Import failed: {{e}}", "success": False}}, f)
+        json.dump({"error": f"Import failed: {e}", "success": False}, f)
     sys.exit(0)
 
 if not imported_objs:
     with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump({{"error": "No mesh objects found in OBJ", "success": False, "object_count": 0}}, f)
+        json.dump({"error": "No mesh objects found in OBJ", "success": False, "object_count": 0}, f)
     sys.exit(0)
 
 # 3. Compute Ground-Truth Topology Metrics
@@ -136,7 +136,7 @@ volume = dx * dy * dz
 center = [(min_coord[i] + max_coord[i]) / 2.0 for i in range(3)]
 radius = max(dx, dy, dz, 0.5)
 
-metrics = {{
+metrics = {
     "success": True,
     "object_count": len(imported_objs),
     "part_names": part_names,
@@ -146,14 +146,14 @@ metrics = {{
     "non_manifold_edges": non_manifold_edges,
     "material_count": len(materials_set),
     "materials": list(materials_set),
-    "bounding_box": {{
+    "bounding_box": {
         "dx": round(dx, 4),
         "dy": round(dy, 4),
         "dz": round(dz, 4),
         "volume": round(volume, 6),
-    }},
+    },
     "center": [round(c, 4) for c in center],
-}}
+}
 
 # 4. Set up Camera and Studio Lighting for 4-angle visual rendering
 scene = bpy.context.scene
