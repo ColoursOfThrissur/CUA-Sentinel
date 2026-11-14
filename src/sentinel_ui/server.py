@@ -59,6 +59,11 @@ from sentinel_core.prompt_scaffolder import PromptScaffolder, ScaffoldingLevel
 from sentinel_adaptive.pilot_controller import AdaptivePilotController
 from sentinel_adaptive.react_controller import ReActController
 from sentinel_ui.telemetry_stream import broadcaster
+from sentinel_gym.sensor_rig import BlenderSensorRig, CSVSensorRig
+from sentinel_gym.critic import HarshCritic
+from sentinel_gym.curriculum import CurriculumGenerator
+from sentinel_gym.auto_refiner import AutoRefiner
+from sentinel_gym.daemon import GymnasiumDaemon
 
 logger = logging.getLogger("SentinelServer")
 
@@ -1258,6 +1263,76 @@ def execute_domain_step(
         "distilled_skill": result.distilled_skill,
         "mistakes_encountered": result.mistakes_encountered,
     }
+
+
+# --- Sentinel Autonomous Gymnasium Setup (Closed-Loop Empirical Self-Evolution) ---
+
+blender_sensor_rig = BlenderSensorRig()
+harsh_critic = HarshCritic(
+    llm_gateway=LLMGateway(endpoint=config.llm.endpoint, default_model=config.llm.model),
+    passing_threshold=0.82,
+)
+curriculum_gen = CurriculumGenerator(
+    skill_bank=skill_bank,
+    mistake_memory=mistake_memory,
+    llm_gateway=LLMGateway(endpoint=config.llm.endpoint, default_model=config.llm.model),
+)
+auto_refiner = AutoRefiner(
+    skill_bank=skill_bank,
+    mistake_memory=mistake_memory,
+    tool_registry=tool_registry,
+)
+
+
+def gym_task_executor(task_id: str, goal: str, domain: str) -> dict[str, Any]:
+    return execute_domain_step(
+        task_id=task_id,
+        goal=goal,
+        domain=domain,
+        effective_agent="blender_artisan" if domain == "3d" else "data_analyst",
+        selected_model=config.llm.model,
+        max_attempts=2,
+        launch_gui=False,
+    )
+
+
+gym_daemon = GymnasiumDaemon(
+    sensor_rig=blender_sensor_rig,
+    critic=harsh_critic,
+    curriculum=curriculum_gen,
+    auto_refiner=auto_refiner,
+    task_executor_fn=gym_task_executor,
+    workspaces_dir=workspaces_dir,
+    inter_cycle_delay_sec=3.0,
+)
+
+
+class GymStartRequest(BaseModel):
+    max_hours: float = 5.0
+    domain: str = "3d"
+
+
+@app.post("/api/gym/start")
+def start_gymnasium(req: GymStartRequest | None = None):
+    """Starts the 5-hour autonomous self-evolution training loop."""
+    hrs = req.max_hours if req else 5.0
+    if gym_daemon.is_running:
+        return {"status": "ALREADY_RUNNING", "gym": gym_daemon.get_status()}
+    gym_daemon.start(max_duration_hours=hrs)
+    return {"status": "STARTED", "gym": gym_daemon.get_status()}
+
+
+@app.post("/api/gym/stop")
+def stop_gymnasium():
+    """Stops the autonomous self-evolution training loop on operator command."""
+    gym_daemon.stop()
+    return {"status": "STOPPING", "gym": gym_daemon.get_status()}
+
+
+@app.get("/api/gym/status")
+def get_gymnasium_status():
+    """Returns real-time telemetry, completed cycle scores, and snapshot paths from the Gymnasium."""
+    return gym_daemon.get_status()
 
 
 @app.post("/api/tasks/dispatch")

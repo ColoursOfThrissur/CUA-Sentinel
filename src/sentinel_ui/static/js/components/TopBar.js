@@ -49,6 +49,14 @@ export function TopBar({ activeTab, onTabChange, telemetry, onRefresh, refreshin
           <${Icon} name="activity" size=${14} />
           <span>Observability</span>
         </button>
+
+        <button
+          className=${`nav-pill-btn ${activeTab === 'gym' ? 'active' : ''}`}
+          onClick=${() => onTabChange('gym')}
+        >
+          <${Icon} name="zap" size=${14} />
+          <span>Gymnasium</span>
+        </button>
       </nav>
 
       <div className="telemetry-cluster">

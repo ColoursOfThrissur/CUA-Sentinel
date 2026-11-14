@@ -100,4 +100,9 @@ export const api = {
     };
     return es;
   },
+
+  // Gymnasium & Autonomous Self-Evolution Engine
+  getGymStatus: () => request('/api/gym/status'),
+  startGym: (data = { max_hours: 5.0, domain: '3d' }) => request('/api/gym/start', { method: 'POST', body: JSON.stringify(data) }),
+  stopGym: () => request('/api/gym/stop', { method: 'POST' }),
 };

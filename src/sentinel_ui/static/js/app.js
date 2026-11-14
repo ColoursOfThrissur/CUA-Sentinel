@@ -9,6 +9,7 @@ import { CommandDeck } from './components/CommandDeck.js';
 import { DagCanvas } from './components/DagCanvas.js';
 import { AgentStudio } from './components/AgentStudio.js';
 import { ObservabilityView } from './components/ObservabilityView.js';
+import { GymConsole } from './components/GymConsole.js';
 import { ViewportModal } from './components/ViewportModal.js';
 
 export function App() {
@@ -395,6 +396,12 @@ export function App() {
             mistakes=${mistakes}
             skills=${skills}
             tools=${tools}
+          />
+        `}
+
+        ${activeTab === 'gym' && html`
+          <${GymConsole}
+            onOpenViewport=${setActiveViewportArtifact}
           />
         `}
       </main>
