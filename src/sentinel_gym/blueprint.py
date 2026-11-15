@@ -237,6 +237,9 @@ class ProgressiveLoDDecomposer:
         # Stage 3: Relative Joint Mating, Dimensions & Local Offsets
         stage3_spec = self._stage_3_joint_mating(goal, macro_spec, stage2_spec, tier, model=model)
 
+        # Stage 3.5: Physical Viability & Spatial Layout ReAct Checker (Real-World Feasibility Loop)
+        stage3_spec = self._stage_3_react_viability_checker(goal, macro_spec, stage3_spec, model=model)
+
         # Stage 4: High-Contrast PBR Material Assignment & Blueprint Synthesis
         final_blueprint = self._stage_4_material_assignment(
             goal=goal,
@@ -260,19 +263,21 @@ class ProgressiveLoDDecomposer:
         """
         sys_prompt = (
             "You are Sentinel's Principal Industrial Design & Mechanical Anatomy Specialist.\n"
-            "PHASE 1: ANATOMICAL DECONSTRUCTION (Zero-Anatomy Prevention):\n"
-            "Carefully analyze every noun phrase in the user's design goal and deconstruct the target machine into ALL its essential real-world physical components.\n"
-            "COMPREHENSIVE HARDWARE CHECKLIST:\n"
-            "- Every hardware entity in the goal MUST be an individual component (e.g. combustion chamber, conical bell nozzle, gimbal ring cradle, injector dome, feed pipes, pipe cylinder, flange collar, hex bolts, rubber gasket, servo hub, claw arms, dual fingers, grip pads, brass bushings).\n"
-            "- NEVER omit named components! If the goal mentions 'combustion chamber', you MUST create 'combustion_chamber'.\n"
-            "- If the goal mentions 'dual-finger claws', each claw arm has two fingers (e.g. finger_left_1, finger_left_2, finger_right_1, finger_right_2).\n"
-            "- If the goal specifies a quantity (e.g. '8 bolts', '4 feed pipes'), list all individual instances (e.g. bolt_1..bolt_8, feed_pipe_1..feed_pipe_4).\n"
+            "PHASE 1: ANATOMICAL DECONSTRUCTION (Zero-Anatomy & Zero-Omission Doctrine):\n"
+            "Carefully analyze every noun phrase in the user's design goal and deconstruct the target machine into ALL its essential physical components.\n"
+            "ZERO-OMISSION HARDWARE CONTRACT:\n"
+            "- Extract EVERY mechanical part, housing, control wheel, actuator, linkage, rotor, shaft, tooth, bracket, and fastener group explicitly mentioned in the design goal.\n"
+            "- NEVER OMIT named components! For example:\n"
+            "  * If the goal mentions a control wheel ('overhead circular red handwheel'), you MUST create 'overhead_handwheel'.\n"
+            "  * If the goal mentions a volute casing ('spiral volute scroll casing'), you MUST create 'volute_scroll_casing'.\n"
+            "  * If the goal mentions an internal rotor, fan, or core ('titanium fan rotor', 'meshing rotor lobes', 'crankshaft throws'), you MUST create them.\n"
+            "  * If the goal specifies a quantity ('5 teeth', '4 tie-bolts', '2 flanged pipe ends', 'dual nozzles', '3 splayed legs'), create all individual physical instances (e.g. bucket_tooth_1..bucket_tooth_5, flanged_pipe_end_1, flanged_pipe_end_2, leg_1..leg_3).\n"
             "For each component define:\n"
             "1. name: snake_case physical noun\n"
             "2. functional_role: what it does mechanically in reality\n"
             "3. primitive: 'cylinder', 'cube', 'cone', 'torus', or 'uv_sphere'\n"
-            "4. mounts_to: parent component name it physically touches, or null for root base/chassis\n"
-            "5. relative_socket: where it connects ('top_face', 'bottom_face', 'concentric_bore', 'radial_perimeter', 'bilateral_shoulder')\n"
+            "4. mounts_to: parent component name it physically touches, or null for root base/casing\n"
+            "5. relative_socket: where it connects ('top_face', 'bottom_face', 'concentric_bore', 'radial_perimeter', 'sidewall', 'terminal_tip')\n"
             "CRITICAL RULES:\n"
             "- Only physical hardware parts (NO entries for colors, shaders, or empty groupings).\n\n"
             "Output strictly a JSON object with keys:\n"
@@ -299,14 +304,13 @@ class ProgressiveLoDDecomposer:
             "Given the anatomical breakdown from Phase 1, define the macro datum frame and primary axes.\n"
             "UNIVERSAL CAD ENGINEERING CONVENTIONS:\n"
             "1. COORDINATE FRAME:\n"
-            "   - Z-axis is VERTICAL/AXIAL (Sky is +Z, Base/Ground/Nozzle/Working End is -Z).\n"
+            "   - Z-axis is VERTICAL/AXIAL (Sky is +Z, Base/Ground is Z=0 datum plane).\n"
             "   - X-axis is LATERAL / WIDTH (Left is -X, Right is +X, bilateral mechanisms mirror across X=0).\n"
             "   - Y-axis is DEPTH / TRANSVERSE (Front view camera looks along +Y, from -Y toward origin).\n"
-            "   - Symmetrical opposing mechanisms (e.g. gripper jaws, gimbal pivot trunnions) MUST be separated along X, NEVER along Y!\n"
             "2. HARDWARE SUBSYSTEMS: Retain and verify EVERY hardware component identified in Phase 1 anatomy.\n"
-            "3. UNITS & ORIGIN CENTERING:\n"
+            "3. UNITS & REALISTIC METRIC SCALE:\n"
             "   - Units are strictly METERS (m), e.g. 0.2m to 2.5m! NEVER use millimeters!\n"
-            "   - World origin [0.0, 0.0, 0.0] is at the CENTER AXIS of the root component.\n\n"
+            "   - World origin [0.0, 0.0, 0.0] is at the CENTER AXIS of the root component at the ground datum.\n\n"
             "Output strictly a JSON object with keys:\n"
             '{"assembly_name": "...", "datum_plane": "Z=0", "bounding_box": [dx, dy, dz], '
             '"primary_axis": "Z", "subsystems": ["SubsystemA", "SubsystemB", ...]}'
@@ -338,19 +342,19 @@ class ProgressiveLoDDecomposer:
             "You are Sentinel's Kinematic Hierarchy Specialist.\n"
             "STAGE 2 LEVEL OF DETAIL (Kinematic Hierarchy & Physical Component Breakdown):\n"
             "Decompose each subsystem from Stage 1 into concrete parent-child physical components.\n"
-            "CRITICAL RELATIVE POSITIONING & TOPOLOGY RULES:\n"
-            "1. NO OMITTED SUBSYSTEMS: Every single subsystem from Stage 1 MUST be represented by one or more physical components in the kinematic tree.\n"
-            "2. PLURAL INSTANCE EXPANSION: Whenever a feature has multiple parts (e.g. 'four feed pipes', 'two claws', 'dual fingers' [two fingers per claw = 4 fingers total], '8 bolts'):\n"
-            "   DO NOT leave them as a single plural node. Create uniquely named entries for EVERY physical instance (e.g. 'feed_pipe_1'...'feed_pipe_4', 'claw_arm_left', 'claw_arm_right', 'finger_left_1', 'finger_left_2', 'grip_pad_left_1', etc.).\n"
-            "3. MANDATORY PHYSICAL MOUNTING TARGETS (Read the Goal carefully!):\n"
-            "   - If a conduit or pipe 'enters' a vessel or dome (e.g. 'feed pipes entering the injector dome'): its parent MUST BE that vessel/dome (`injector_dome`), NEVER a distant outer cradle ring!\n"
-            "   - If a grip pad or sensor mounts on a finger/jaw: its parent MUST BE that specific finger or jaw (`finger_left_1`, `finger_right_1`), NOT the main chassis.\n"
-            "   - If a bushing, bearing, or pivot pin supports an arm hinge: its parent MUST BE the hinge bracket or crossbar at the pivot location.\n"
-            "   - Exactly ONE root part has `parent: null` (the main mounting hub, chassis, or outer cradle ring).\n"
-            "4. KINEMATIC TILT INHERITANCE: When an assembly pivots or tilts (e.g. nozzle tilted at 20°), all hardware traveling with it (combustion chamber, injector dome, feed lines entering the dome) MUST be child descendants of the tilting body so they tilt together rigidly!\n"
-            "5. ZERO FLOATING & ZERO NON-PHYSICAL NODES: Every child must touch its parent. No nodes for shaders or colors.\n\n"
+            "CRITICAL KINEMATIC TREE RULES:\n"
+            "1. NO OMITTED SUBSYSTEMS: Every single subsystem from Stage 1 MUST be represented in the kinematic tree.\n"
+            "2. PLURAL INSTANCE EXPANSION: Whenever a feature has multiple parts (e.g. '5 teeth', '4 tie-bolts', '2 flanged pipe ends', '3 legs'):\n"
+            "   Create uniquely named entries for EVERY individual instance (e.g. 'bucket_tooth_1'...'bucket_tooth_5', 'bolt_1'...'bolt_4').\n"
+            "3. HIERARCHICAL ANCHORING:\n"
+            "   - Exactly ONE root part has `parent: null` (the main stationary chassis, housing casing, valve body, or pedestal base).\n"
+            "   - Internal rotating parts (shafts, rotors, impellers, pistons, bearings) have the surrounding casing/housing as parent.\n"
+            "   - Controls and actuators (handwheels, cylinders, drive screws, linkages) attach to the boss, stem, or hinge they operate.\n"
+            "   - Fasteners (bolts, studs) attach to the specific flange, collar, or foot they fasten.\n"
+            "   - Teeth, pads, and contact tips attach to their respective bucket, arm, or jaw.\n"
+            "4. ZERO FLOATING PARTS: Every child must physically contact its parent component.\n\n"
             "Output strictly a JSON object with keys:\n"
-            '{"root_part": "...", "kinematic_tree": [{"name": "...", "parent": "..." or null, "role": "...", "relative_placement": "top|base|concentric|radial|inward"}]}'
+            '{"root_part": "...", "kinematic_tree": [{"name": "...", "parent": "..." or null, "role": "...", "relative_placement": "top|base|concentric|radial|sidewall|tip"}]}'
         )
         prompt = (
             f"Goal: {goal}\n"
@@ -375,32 +379,41 @@ class ProgressiveLoDDecomposer:
             "You are Sentinel's Precision Mechanical Geometry Calculator.\n"
             "STAGE 3 LEVEL OF DETAIL (Metric Dimensions, Local Offsets & Joint Clearances):\n"
             "For each component in the kinematic tree, compute metric dimensions, primitive shape, local offsets, and rotation angles.\n"
-            "CRITICAL TOPOLOGY & ORIENTATION RULES:\n"
-            "1. BLENDER CYLINDER AXIS & FASTENERS:\n"
-            "   - In Blender, a primitive 'cylinder' is created with its height aligned with the local Z-axis by default!\n"
-            "   - To make mounting bolts, pins, shafts, or pipes point axially along Z: rotation_deg MUST BE [0, 0, 0]! NEVER rotate them [90, 0, 0] (which tips them on their sides)!\n"
-            "   - Fasteners (hex bolts, pins, studs) MUST sit PROUD on the parent surface to be visible! Fastener heads are low-profile hexagonal caps with depth 0.03m - 0.05m and radius 0.04m - 0.05m (NEVER tall poles > 0.06m)!\n"
-            "   - Fastener offset Z MUST be +(parent_depth/2 + bolt_depth/2) sitting on the top collar face!\n"
-            "2. END-EFFECTOR & ROBOTIC GRIPPER TOPOLOGY:\n"
-            "   - The servo mount hub is at the REAR/TOP (+Z). The jaws/claws MUST extend FORWARD/DOWNWARD along the -Z axis from the front face into open grasping space.\n"
-            "   - The two opposing jaws sit on opposite sides along X (Left jaw at X = -0.15 to -0.22, Right jaw at X = +0.15 to +0.22), NEVER along Y!\n"
-            "   - Inward pinch tilt: Left jaw rotates +25° around Y (tilting bottom toward +X), Right jaw rotates -25° around Y (tilting bottom toward -X) so tips pinch inward toward X=0 with a visible gripping aperture.\n"
-            "   - Dual fingers on a jaw have transverse spacing along Y (Finger 1 at Y = +0.035, Finger 2 at Y = -0.035).\n"
-            "   - Rubber grip pads MUST mount directly on the inner contact faces of the fingers (left pad at local +X, right pad at local -X), centered on the finger gripping face (NEVER floating below in empty air)!\n"
-            "   - Bushings and hinge pins are small cylinders (radius 0.035, depth 0.08) at the pivot hinge.\n"
-            "3. PROPULSION & ROCKET ENGINE TOPOLOGY:\n"
-            "   - Exhaust nozzles emit downward thrust: The flared conical bell exhaust nozzle is mounted at the BOTTOM (-Z) of the combustion chamber, flaring wide at the bottom (radius_bottom > radius_top, depth >= 0.8 * chamber_depth).\n"
-            "   - The combustion chamber sits in the MIDDLE (Z approx 0), supported inside the gimbal ring cradle.\n"
-            "   - The injector dome cap is mounted on the TOP (+Z) of the combustion chamber.\n"
-            "   - The four overhead fuel feed pipes are parallel vertical cylinders (`rotation_deg: [0, 0, 0]`) mounted on the injector dome entering directly into the top surface from above (+Z), spaced at non-occluding azimuths: theta in [30°, 120°, 210°, 300°].\n"
-            "   - The 20-degree pivot tilt: The combustion chamber (and its attached bell nozzle and injector dome) MUST have rotation_deg: [20, 0, 0] to show the gimbal deflection angle, while the outer gimbal ring cradle remains untilted [0, 0, 0].\n"
-            "4. PRIMITIVE SHAPES:\n"
-            "   - Rings and circular gimbal cradles use primitive 'torus' ({'major_radius': ..., 'minor_radius': ...}). Pipe flange collars and gaskets use flat circular 'cylinder' discs (collar: depth 0.12 - 0.15, radius 0.65; gasket: depth 0.04, radius 0.70) to provide flat planar mounting surfaces for fasteners and visible perimeter rim.\n"
-            "   - Conical bell nozzles use primitive 'cone' with flared base wider than throat: e.g. {'radius_bottom': 0.75, 'radius_top': 0.35, 'depth': 1.10}.\n"
-            "   - Robotic claw arms and fingers should be slender links (primitive 'cube' with size [0.04, 0.04, 0.25] or 'cylinder' with radius 0.025, depth 0.25), NEVER giant stubby cylinders!\n\n"
+            "UNIVERSAL CAD TOPOLOGY & MATHEMATICAL POSITIONING RULES:\n"
+            "1. CONCENTRIC & COAXIAL PARTS (Shafts, Rotors, Pistons, Bearings, Gland Collars):\n"
+            "   - Share the centerline of their parent cylinder along Z: `offset: [0.0, 0.0, z_offset]`.\n"
+            "   - Inner parts have smaller radius than the housing: radius <= parent_radius * 0.85.\n"
+            "   - Internal shafts or rotors MUST extend through the housing faces (`depth > housing_depth`) so they are visible from outside!\n"
+            "2. HOUSINGS ENCLOSING INTERNAL ROTATING OR MOVING PARTS (Bearings, Gears, Impellers):\n"
+            "   - Housings MUST NOT be solid closed monoliths that bury internal components! If a housing holds an inner bearing or shaft, specify `inner_radius` or a central bore opening so the internal mechanism is visible.\n"
+            "3. AXIAL STACKING ON FACES (Caps, Glands, Handwheels, Heads, Flanges):\n"
+            "   - To mount on the TOP face of a parent along Z: `offset_z = +(parent_depth / 2.0 + child_depth / 2.0)`.\n"
+            "   - To mount on the BOTTOM face of a parent along Z: `offset_z = -(parent_depth / 2.0 + child_depth / 2.0)`.\n"
+            "   - OVERHEAD CONTROLS (Handwheels, levers, knobs, focusers) MUST use POSITIVE (+Z) offsets relative to their supporting stem or boss: `offset_z = +(stem_depth / 2.0 + handwheel_depth / 2.0)`.\n"
+            "4. RADIAL FASTENER & BOLT ARRAYS (Mounting Bolts, Studs, Tie-Bolts):\n"
+            "   - Pitch circle radius is proportional: `pitch_r = parent_radius * 0.75` to `0.85`.\n"
+            "   - Evenly distribute N bolts in a circle at `angle = 2 * PI * i / N`:\n"
+            "     `offset = [pitch_r * cos(angle), pitch_r * sin(angle), +(parent_depth / 2.0 + bolt_depth / 2.0)]`.\n"
+            "   - Fasteners are low-profile cylinders (`depth: 0.04 - 0.06, radius: 0.035 - 0.05`), pointing axially (`rotation_deg: [0, 0, 0]`).\n"
+            "5. LINEAR ARRAYS ACROSS A WIDTH (Teeth, Fins, Blades, Discs):\n"
+            "   - Distribute N parallel features across parent width W along the transverse axis (X or Y):\n"
+            "     `x_i = -W * 0.45 + (i * (W * 0.90) / max(N - 1, 1))`.\n"
+            "   - For example, 5 bucket teeth across a 1.0m lip: tooth_1 at X=-0.45, tooth_2 at X=-0.225, tooth_3 at X=0.0, tooth_4 at X=+0.225, tooth_5 at X=+0.45.\n"
+            "6. SIDEWALL & TRANSVERSE ATTACHMENTS (Nozzles, Inlets, Outlets, Hydraulic Ports):\n"
+            "   - Attached to the curved sidewall of a cylinder: `offset_x = +(parent_radius + nozzle_depth / 2.0)`, `offset_y = 0.0`.\n"
+            "   - Pointed radially outward: `rotation_deg = [0.0, 90.0, 0.0]`.\n"
+            "7. STRADDLING CALIPERS & CLAMPS (Brake Calipers, Clamping Brackets):\n"
+            "   - Positioned at the outer perimeter rim: `offset_x = parent_radius * 0.95`.\n"
+            "   - Shape is a box or C-frame wrapping symmetrically over both faces of the rim.\n"
+            "8. SPLAYED LEGS & MULTI-STRUT BASES (Tripods, Pedestal Mounts):\n"
+            "   - Legs attached at azimuths `360 / N` deg, tilted outward by 15° to 22° so feet spread wide on the ground.\n"
+            "9. METRIC UNIT CONVERSIONS (Meters vs Millimeters & Centimeters):\n"
+            "   - All 3D coordinates and dimensions in Blender are in METERS (1.0 = 1 meter).\n"
+            "   - If the goal or component specifies millimeters (e.g. 6.35mm, 12mm, 50mm), you MUST convert to meters:\n"
+            "     6.35mm = 0.00635, 12mm = 0.012, 50mm = 0.05. Never enter millimeter values as bare numbers in meters!\n\n"
             "Output strictly a JSON object with keys:\n"
             '{"components": [{"name": "...", "parent": "..." or null, "primitive": "cylinder|cube|cone|uv_sphere|torus", '
-            '"dimensions": {"radius": <float>, "depth": <float>}, "offset": [x, y, z], "rotation_deg": [rx, ry, rz]}]}'
+            '"dimensions": {"radius": <float>, "depth": <float>} or {"size": [dx, dy, dz]}, "offset": [x, y, z], "rotation_deg": [rx, ry, rz]}]}'
         )
         prompt = (
             f"Goal: {goal}\n"
@@ -417,6 +430,273 @@ class ProgressiveLoDDecomposer:
         )
         data = safe_parse_json_with_math(resp)
         return data or stage2_spec
+
+    def _stage_3_react_viability_checker(
+        self,
+        goal: str,
+        macro_spec: dict[str, Any],
+        stage3_spec: dict[str, Any],
+        model: str | None = None,
+    ) -> dict[str, Any]:
+        """Stage 3.5: ReAct (Reason + Act) Physical Viability & Spatial Layout Checker.
+
+        Audits the proposed spatial dimensions and arrangement for real-world physical viability:
+        1. Unit text mismatches (e.g., millimeter values entered as meters, e.g. 6.35m vs 6.35mm).
+        2. Solid enclosure burials (bearings, gears, shafts, or rotors hidden inside opaque monoliths).
+        3. Inverted elevation & controls (overhead handwheels or caps placed at negative Z).
+        4. Zero-spread collisions (multiple indexed components overlapping at the identical coordinate).
+
+        If violations are detected, engages a ReAct reflection loop (THOUGHT -> ACTION) with the LLM
+        to deliberate on physical failure modes and recalculate viable spatial dimensions, followed by
+        deterministic mathematical guardrail enforcement.
+        """
+        components = stage3_spec.get("components", [])
+        if not components:
+            return stage3_spec
+
+        violations = self._audit_spatial_viability(goal, macro_spec, components)
+        if not violations:
+            logger.info("Stage 3.5 Viability Checker: Spatial layout passed all physical feasibility audits (0 violations).")
+            return stage3_spec
+
+        logger.warning(
+            "Stage 3.5 Viability Checker: Detected %d physical viability violations:\n%s",
+            len(violations),
+            "\n".join(f"  - [{v['type']}] {v['description']}" for v in violations),
+        )
+
+        # ReAct Reflection Loop (Reasoning + Action)
+        sys_prompt = (
+            "You are Sentinel's Principal Mechanical Reliability & Spatial Viability Engineer.\n"
+            "STAGE 3.5: REAL-WORLD PHYSICAL VIABILITY REACT ENGINE (Reason + Act Protocol):\n"
+            "An empirical CAD spatial audit of Stage 3 dimensions and offsets detected physical viability violations.\n"
+            "You must resolve every violation using the ReAct protocol:\n\n"
+            "PROTOCOL FORMAT:\n"
+            "THOUGHT: Reason step-by-step through each detected violation. Explain:\n"
+            "1. Why the current dimension or offset violates physical reality (e.g. 6.35m shaft on a 0.1m motor is 1000x oversized; solid housing buries internal bearing).\n"
+            "2. The exact real-world engineering fix (convert mm to meters: 6.35mm = 0.00635m; add 'inner_radius' or bore to parent housing; invert Z for overhead control; spread array across parent width).\n\n"
+            "ACTION: Output strictly a valid JSON object containing the repaired 'components' list:\n"
+            "```json\n"
+            '{"components": [{"name": "...", "parent": "..." or null, "primitive": "cylinder|cube|cone|uv_sphere|torus", '
+            '"dimensions": {"radius": <float>, "depth": <float>} or {"size": [dx, dy, dz]}, "offset": [x, y, z], "rotation_deg": [rx, ry, rz]}]}\n'
+            "```"
+        )
+
+        violations_text = "\n".join(f"{i+1}. [{v['type']}] {v['description']}" for i, v in enumerate(violations))
+        prompt = (
+            f"Goal: {goal}\n"
+            f"Assembly Bounding Box: {json.dumps(macro_spec.get('bounding_box'))}\n"
+            f"Current Stage 3 Components:\n{json.dumps(components, indent=2)}\n\n"
+            f"CAD AUDIT VIOLATIONS DETECTED:\n{violations_text}\n\n"
+            "Execute ReAct reflection (THOUGHT + ACTION) to repair the components."
+        )
+
+        resp = self.gw.generate(
+            prompt=prompt,
+            system=sys_prompt,
+            model=model,
+            temperature=0.1,
+            max_tokens=2500,
+        )
+
+        data = safe_parse_json_with_math(resp)
+        repaired_components = data.get("components") if (data and isinstance(data.get("components"), list) and len(data["components"]) > 0) else components
+
+        # Apply deterministic fallback guardrails on repaired components
+        repaired_components = self._apply_viability_guardrails(goal, macro_spec, repaired_components, violations)
+
+        stage3_spec["components"] = repaired_components
+        return stage3_spec
+
+    def _audit_spatial_viability(
+        self, goal: str, macro_spec: dict[str, Any], components: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Empirical spatial audit for real-world viability, physical clearances, and scale consistency."""
+        violations = []
+
+        # 1. Parse mm mentions in goal
+        mm_matches = [float(m) for m in re.findall(r"(\d+(?:\.\d+)?)\s*mm\b", goal, re.IGNORECASE)]
+
+        # Extract macro bounding box
+        bbox_raw = macro_spec.get("bounding_box", [1.0, 1.0, 1.0])
+        max_bbox = max(bbox_raw) if isinstance(bbox_raw, list) and len(bbox_raw) == 3 else 1.5
+
+        parts_by_name = {c.get("name"): c for c in components if c.get("name")}
+
+        # Check 1: Unit & Scale Mismatch
+        for c in components:
+            name = c.get("name", "")
+            dims = c.get("dimensions", {})
+            for dim_k, dim_v in list(dims.items()):
+                vals = dim_v if isinstance(dim_v, (list, tuple)) else [dim_v]
+                for v in vals:
+                    if not isinstance(v, (int, float)):
+                        continue
+                    v_f = float(v)
+                    # If explicit mm match in goal (e.g. 6.35)
+                    for mm_val in mm_matches:
+                        if abs(v_f - mm_val) < 0.05 and v_f > 0.5:
+                            violations.append({
+                                "type": "UNIT_MISMATCH",
+                                "component": name,
+                                "dimension": dim_k,
+                                "current_value": v_f,
+                                "expected_value": round(v_f / 1000.0, 6),
+                                "description": f"Component '{name}' dimension '{dim_k}' is {v_f}m. The goal explicitly specifies {mm_val}mm ({mm_val/1000.0}m). In 3D space, {v_f}m is 1000x oversized!",
+                            })
+                    # Grossly exceeding macro bounding box
+                    if v_f > max_bbox * 3.0 and v_f > 2.0:
+                        violations.append({
+                            "type": "GROSS_OVERSIZING",
+                            "component": name,
+                            "dimension": dim_k,
+                            "current_value": v_f,
+                            "description": f"Component '{name}' dimension '{dim_k}' is {v_f}m, which is > 3x larger than the entire assembly bounding box ({max_bbox}m).",
+                        })
+
+        # Check 2: Solid Enclosure Burial
+        internal_keywords = ("bearing", "rotor", "shaft", "gear", "piston", "impeller", "core", "screw", "spindle")
+        enclosure_keywords = ("housing", "casing", "body", "block", "shell", "frame", "cylinder")
+        for c in components:
+            name_l = c.get("name", "").lower()
+            parent_name = c.get("parent")
+            if not parent_name:
+                continue
+            parent = parts_by_name.get(parent_name)
+            if not parent:
+                continue
+            p_name_l = parent_name.lower()
+            if any(k in name_l for k in internal_keywords) and any(k in p_name_l for k in enclosure_keywords):
+                p_dims = parent.get("dimensions", {})
+                has_inner = "inner_radius" in p_dims or "bore_radius" in p_dims or "hole_radius" in p_dims
+                p_depth = float(p_dims.get("depth", p_dims.get("size", [0, 0, 0.5])[2] if isinstance(p_dims.get("size"), (list, tuple)) else 0.5))
+                c_depth = float(c.get("dimensions", {}).get("depth", c.get("dimensions", {}).get("size", [0, 0, 0.5])[2] if isinstance(c.get("dimensions", {}).get("size"), (list, tuple)) else 0.5))
+                if not has_inner and c_depth <= p_depth:
+                    violations.append({
+                        "type": "SOLID_ENCLOSURE_BURIAL",
+                        "component": c.get("name"),
+                        "parent": parent_name,
+                        "description": f"Internal component '{c.get('name')}' is completely buried inside solid parent '{parent_name}'. The parent housing needs an 'inner_radius' or open bore cutout, or the component needs to extend outward to be visible.",
+                    })
+
+        # Check 3: Inverted Elevation & Overhead Controls
+        overhead_keywords = ("overhead", "handwheel", "wheel", "knob", "lever", "cap", "lid", "bonnet", "focuser", "eyepiece", "top_cap", "chimney")
+        for c in components:
+            name_l = c.get("name", "").lower()
+            if any(k in name_l for k in overhead_keywords):
+                offset = c.get("offset", [0, 0, 0])
+                if offset and len(offset) >= 3 and offset[2] <= 0.0:
+                    violations.append({
+                        "type": "INVERTED_ELEVATION",
+                        "component": c.get("name"),
+                        "current_z": offset[2],
+                        "description": f"Overhead/top component '{c.get('name')}' has non-positive Z offset ({offset[2]}). It must mount on the positive (+Z) top face.",
+                    })
+
+        # Check 4: Zero-Spread Collision Clusters
+        offset_groups: dict[tuple[str, float, float, float], list[str]] = {}
+        for c in components:
+            name = c.get("name", "")
+            off = c.get("offset", [0, 0, 0])
+            parent = c.get("parent")
+            if off and len(off) == 3 and parent:
+                key = (parent, round(float(off[0]), 3), round(float(off[1]), 3), round(float(off[2]), 3))
+                offset_groups.setdefault(key, []).append(name)
+
+        for (parent, ox, oy, oz), clustered_names in offset_groups.items():
+            if len(clustered_names) >= 2 and any(re.search(r"_\d+$", n) for n in clustered_names):
+                violations.append({
+                    "type": "ZERO_SPREAD_COLLISION",
+                    "components": clustered_names,
+                    "parent": parent,
+                    "offset": [ox, oy, oz],
+                    "description": f"Components {clustered_names} share the identical location [{ox}, {oy}, {oz}] under parent '{parent}', causing physical overlap. They must be distributed linearly or radially.",
+                })
+
+        # Check 5: Eccentric Shaft / Snout Placement
+        for c in components:
+            name_l = c.get("name", "").lower()
+            if any(k in name_l for k in ("shaft", "rotor_core", "sun_gear", "snout")) and "tie_rod" not in name_l:
+                off = c.get("offset", [0, 0, 0])
+                if off and len(off) >= 3 and (abs(float(off[0])) > 0.015 or abs(float(off[1])) > 0.015):
+                    violations.append({
+                        "type": "ECCENTRIC_SHAFT",
+                        "component": c.get("name"),
+                        "current_offset": off,
+                        "description": f"Drive shaft/core component '{c.get('name')}' is positioned off-center at [{off[0]}, {off[1]}]. Central shafts must align concentrically at [0.0, 0.0] on their parent axis.",
+                    })
+
+        return violations
+
+    def _apply_viability_guardrails(
+        self,
+        goal: str,
+        macro_spec: dict[str, Any],
+        components: list[dict[str, Any]],
+        violations: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Deterministic safety net ensuring that all detected violations are mathematically resolved."""
+        mm_matches = [float(m) for m in re.findall(r"(\d+(?:\.\d+)?)\s*mm\b", goal, re.IGNORECASE)]
+        bbox_raw = macro_spec.get("bounding_box", [1.0, 1.0, 1.0])
+        max_bbox = max(bbox_raw) if isinstance(bbox_raw, list) and len(bbox_raw) == 3 else 1.5
+
+        parts_by_name = {c.get("name"): c for c in components if c.get("name")}
+
+        for c in components:
+            name = c.get("name", "")
+            dims = c.get("dimensions", {})
+            # 1. Scale / Unit Mismatch Guardrail
+            for k, v in list(dims.items()):
+                if isinstance(v, (int, float)):
+                    vf = float(v)
+                    for mm_val in mm_matches:
+                        if abs(vf - mm_val) < 0.05 and vf > 0.5:
+                            dims[k] = round(vf / 1000.0, 6)
+                    if dims[k] > max_bbox * 3.0 and dims[k] > 2.0:
+                        dims[k] = round(dims[k] / 1000.0, 4) if dims[k] > 10.0 else round(max_bbox * 0.8, 4)
+                elif isinstance(v, (list, tuple)):
+                    new_vals = []
+                    for item in v:
+                        if isinstance(item, (int, float)):
+                            it_f = float(item)
+                            for mm_val in mm_matches:
+                                if abs(it_f - mm_val) < 0.05 and it_f > 0.5:
+                                    it_f = round(it_f / 1000.0, 6)
+                            if it_f > max_bbox * 3.0 and it_f > 2.0:
+                                it_f = round(it_f / 1000.0, 4) if it_f > 10.0 else round(max_bbox * 0.8, 4)
+                            new_vals.append(it_f)
+                        else:
+                            new_vals.append(item)
+                    dims[k] = new_vals
+
+            # 2. Solid Enclosure Cavity Guardrail
+            parent_name = c.get("parent")
+            if parent_name and parent_name in parts_by_name:
+                parent = parts_by_name[parent_name]
+                p_name_l = parent_name.lower()
+                c_name_l = name.lower()
+                if any(k in c_name_l for k in ("bearing", "rotor", "shaft", "gear", "piston", "impeller", "core", "screw", "spindle")) and any(k in p_name_l for k in ("housing", "casing", "body", "block", "shell", "frame")):
+                    p_dims = parent.setdefault("dimensions", {})
+                    if "inner_radius" not in p_dims and "bore_radius" not in p_dims:
+                        c_r = float(dims.get("radius", dims.get("major_radius", dims.get("size", [0.2, 0.2, 0.2])[0] / 2.0 if isinstance(dims.get("size"), list) else 0.2)))
+                        p_dims["inner_radius"] = round(c_r * 1.15, 4)
+                        p_dims["bore_axis"] = "y" if ("block" in p_name_l or "bearing" in p_name_l or "pillow" in p_name_l) else "z"
+
+            # 3. Overhead Controls Elevation Guardrail
+            if any(k in name.lower() for k in ("overhead", "handwheel", "top_cap", "bonnet", "knob", "focuser", "eyepiece")):
+                off = c.setdefault("offset", [0.0, 0.0, 0.0])
+                if len(off) >= 3 and off[2] <= 0.0:
+                    off[2] = abs(off[2]) if abs(off[2]) > 0.05 else 0.25
+
+            # 4. Concentric Shaft Centering & Minimum Visible Feature Clamping
+            if any(k in name.lower() for k in ("shaft", "rotor_core", "sun_gear", "snout")) and "tie_rod" not in name.lower():
+                off = c.setdefault("offset", [0.0, 0.0, 0.0])
+                off[0] = 0.0
+                off[1] = 0.0
+                if "radius" in dims and float(dims["radius"]) < 0.008:
+                    dims["radius"] = 0.008
+
+        return components
 
     def _stage_4_material_assignment(
         self,
@@ -449,15 +729,17 @@ class ProgressiveLoDDecomposer:
             "You are Sentinel's PBR Material Specialist.\n"
             "STAGE 4 LEVEL OF DETAIL (Contrasting PBR Shaders):\n"
             "Assign realistic, physically contrasting Principled BSDF materials to EVERY component in the model.\n"
-            "CRITICAL VISUAL DIFFERENTIATION RULES:\n"
-            "- Polished Chrome / Structural Steel / Claws: metallic=0.7, roughness=0.20, color=[0.92, 0.94, 0.98, 1.0].\n"
-            "- Burnished Copper / Thrust Nozzle / Combustion Chamber: metallic=0.5, roughness=0.30, color=[0.96, 0.52, 0.18, 1.0].\n"
-            "- Aerospace Titanium / Injector Dome / Collars: metallic=0.5, roughness=0.30, color=[0.35, 0.55, 0.75, 1.0].\n"
-            "- Polished Brass / Bushings / Pivot Pins / Fittings: metallic=0.8, roughness=0.20, color=[0.98, 0.80, 0.15, 1.0].\n"
-            "- High-Friction Grip Rubber / Seals / Gaskets / Pads: metallic=0.0, roughness=0.90, color=[0.10, 0.10, 0.12, 1.0].\n"
-            "- Matte Black Structural Frame / Mount Hub: metallic=0.1, roughness=0.75, color=[0.12, 0.12, 0.15, 1.0].\n"
-            "- Shiny Feed Lines / Plumbing: metallic=0.6, roughness=0.25, color=[0.90, 0.95, 1.0, 1.0].\n"
-            "ABSOLUTE RULE: Zero uniform gray models! Every distinct functional sub-system MUST have its own contrasting color!\n\n"
+            "UNIVERSAL HIGH-CONTRAST PBR PALETTE RULES:\n"
+            "- Painted Industrial Bodies / Casings / Frames: rich distinct color (Cast Industrial Blue: [0.10, 0.35, 0.78, 1.0], Safety Yellow: [1.0, 0.78, 0.0, 1.0], Hammer-Tone Green: [0.18, 0.55, 0.28, 1.0]), metallic=0.15, roughness=0.45.\n"
+            "- Polished Machined Steel / Piston Rods / Shafts: bright chrome/steel metallic=0.88, roughness=0.15, color=[0.92, 0.94, 0.98, 1.0].\n"
+            "- Bronze / Brass Fittings / Valve Trim / Focusers: bright golden metallic=0.85, roughness=0.18, color=[0.98, 0.82, 0.15, 1.0].\n"
+            "- Handwheels & Controls: prominent Emergency Red metallic=0.15, roughness=0.25, color=[0.88, 0.10, 0.10, 1.0].\n"
+            "- Titanium Alloys / Turbine Blades / Shrouds: aerospace titanium metallic=0.70, roughness=0.28, color=[0.38, 0.44, 0.54, 1.0].\n"
+            "- Cast Iron Housings / Dark Frames: gunmetal metallic=0.75, roughness=0.35, color=[0.24, 0.26, 0.30, 1.0].\n"
+            "- Rubber Seals / Gaskets / Composite Friction Pads: dark matte dielectric metallic=0.0, roughness=0.92, color=[0.08, 0.08, 0.10, 1.0].\n"
+            "- Fasteners & Tie-Rods (Hex Bolts, Studs, Corner Rods): hardened fastener finish metallic=0.85, roughness=0.20, color=[0.22, 0.24, 0.28, 1.0] or Golden Brass: [0.98, 0.82, 0.15, 1.0].\n"
+            "- Electrical Connector Housings & Terminal Boxes: matte black plastic dielectric metallic=0.05, roughness=0.80, color=[0.10, 0.10, 0.12, 1.0].\n"
+            "CONTRAST CONTRACT: Zero uniform models! Connected or adjacent parts MUST NOT share identical colors: if the body is light aluminum or steel, fasteners and tie-rods MUST be darkened steel or brass, electrical boxes MUST be black, and shafts MUST be polished chrome!\n\n"
             "Output strictly a JSON object with keys:\n"
             '{"materials": {"Part_Name": {"name": "Mat_Name", "color": [r, g, b, 1.0], "metallic": <float>, "roughness": <float>}}}'
         )
@@ -561,57 +843,24 @@ class ProgressiveLoDDecomposer:
         return bp
 
     def _solve_and_enforce_kinematic_mating(self, bp: SpatialBlueprint) -> None:
-        """CAD Constraint Solver: Deterministically ensures Euclidean physical contact between parent and child components.
-        Eliminates buried fasteners, floating feed pipes, and sideways/occluded robotic jaws.
+        """Generalized CAD Constraint Solver: Deterministically ensures Euclidean physical contact between parent and child components.
+        Domain-agnostic: Operates purely on mechanical geometry, parent-child proportions, and fastener physics without hardcoded asset names.
         """
         # 0. Root Centering and Millimeter-to-Meter Normalization
+        max_envelope = max(bp.bounding_envelope.get("dx", 1.0), bp.bounding_envelope.get("dy", 1.0), bp.bounding_envelope.get("dz", 1.0))
         for c in bp.components:
             if c.parent is None:
                 c.offset[0] = 0.0
                 c.offset[1] = 0.0
             for k, v in list(c.dimensions.items()):
-                if isinstance(v, (int, float)) and v > 20.0:
+                if isinstance(v, (int, float)) and (v > 20.0 or (v > 2.0 and v > max_envelope * 2.5)):
                     c.dimensions[k] = round(float(v) / 1000.0, 4)
                 elif isinstance(v, (list, tuple)):
-                    c.dimensions[k] = [round(float(x) / 1000.0, 4) if float(x) > 20.0 else float(x) for x in v]
+                    c.dimensions[k] = [round(float(x) / 1000.0, 4) if (float(x) > 20.0 or (float(x) > 2.0 and float(x) > max_envelope * 2.5)) else float(x) for x in v]
 
         parts_by_name = {c.name: c for c in bp.components}
 
-        # 1. Pipe Flange Collar & Fasteners
-        pipe_obj = None
-        for c in bp.components:
-            name_lower = c.name.lower()
-            if "pipe" in name_lower and c.parent is None:
-                pipe_obj = c
-                break
-
-        pipe_r = 0.35
-        pipe_d = 0.60
-        if pipe_obj:
-            pipe_r = float(pipe_obj.dimensions.get("radius", 0.35))
-            pipe_obj.primitive = "cylinder"
-            pipe_obj.dimensions = {"radius": pipe_r, "inner_radius": round(pipe_r * 0.72, 4), "depth": pipe_d}
-            pipe_obj.offset = [0.0, 0.0, 0.0]
-            if pipe_obj.material:
-                pipe_obj.material.name = "Polished_Steel_Pipe"
-                pipe_obj.material.color = [0.88, 0.90, 0.95, 1.0]
-                pipe_obj.material.metallic = 0.80
-                pipe_obj.material.roughness = 0.20
-
-        for c in bp.components:
-            name_lower = c.name.lower()
-            if ("collar" in name_lower or "flange" in name_lower) and not any(k in name_lower for k in ("bolt", "gasket", "pipe", "tube")):
-                c.primitive = "cylinder"
-                r = float(c.dimensions.get("major_radius", c.dimensions.get("radius", 0.65)))
-                c.dimensions = {"radius": max(r, 0.65), "inner_radius": pipe_r, "depth": 0.15}
-                c.offset = [0.0, 0.0, 0.0]
-                if c.material:
-                    c.material.name = "Polished_Steel"
-                    c.material.color = [0.92, 0.94, 0.98, 1.0]  # Polished steel metallic
-                    c.material.metallic = 0.85
-                    c.material.roughness = 0.15
-
-        # 1b. Fastener Radial Array (Hexagonal mounting bolts)
+        # 1. Generalized Proportional Fastener Solver (Bolt Circles, Studs, Pins)
         fastener_groups: dict[str, list[SpatialComponent]] = {}
         for c in bp.components:
             name_lower = c.name.lower()
@@ -622,355 +871,122 @@ class ProgressiveLoDDecomposer:
             parent = parts_by_name.get(parent_name)
             if not parent:
                 continue
+
+            # Determine parent radius dynamically
+            parent_r = 0.0
+            if "radius" in parent.dimensions:
+                parent_r = float(parent.dimensions["radius"])
+            elif "major_radius" in parent.dimensions:
+                parent_r = float(parent.dimensions["major_radius"])
+            elif "size" in parent.dimensions and isinstance(parent.dimensions["size"], (list, tuple)):
+                parent_r = float(parent.dimensions["size"][0]) / 2.0
+
             parent_d = float(parent.dimensions.get("depth", parent.dimensions.get("height", 0.15)))
-            collar_outer_r = float(parent.dimensions.get("radius", 0.65))
-            pitch_r = 0.52
+            pitch_r = round(parent_r * 0.78, 4) if parent_r > 0.04 else 0.20
 
             n = len(bolts)
             bolts.sort(key=lambda b: b.name)
             for i, bolt in enumerate(bolts):
-                bolt_d = 0.085
+                bolt_d = min(float(bolt.dimensions.get("depth", 0.045)), 0.05)
+                bolt_r = min(float(bolt.dimensions.get("radius", 0.035)), 0.045)
                 bolt.dimensions["depth"] = bolt_d
-                bolt.dimensions["radius"] = 0.065
+                bolt.dimensions["radius"] = bolt_r
                 bolt.primitive = "cylinder"
                 angle = (2.0 * math.pi * i) / max(n, 1)
                 bolt.offset = [
                     round(pitch_r * math.cos(angle), 4),
                     round(pitch_r * math.sin(angle), 4),
-                    round((parent_d / 2.0) + (bolt_d / 2.0), 4),  # PROUD on top face!
+                    round((parent_d / 2.0) + (bolt_d / 2.0), 4),  # Proud on top face
                 ]
                 bolt.rotation_deg = [0.0, 0.0, 0.0]
-                if bolt.material:
-                    bolt.material.name = "Hardened_Fastener_Steel_Bolts"
-                    bolt.material.color = [0.22, 0.24, 0.28, 1.0]  # High-contrast gunmetal fastener finish!
-                    bolt.material.metallic = 0.85
-                    bolt.material.roughness = 0.20
+                if not bolt.material or bolt.material.name.startswith("part_") or bolt.material.metallic < 0.5:
+                    bolt.material = MaterialSpec(
+                        name="Hardened_Fastener_Steel",
+                        color=[0.24, 0.26, 0.30, 1.0],
+                        metallic=0.85,
+                        roughness=0.20,
+                    )
 
-        # 1c. Rubber Gaskets Mating Face (Distinct Sealing Ring beneath Collar)
+        # 2. Generalized Proportional Collar & Gland Solver
         for c in bp.components:
-            if "gasket" in c.name.lower() and c.parent:
+            name_lower = c.name.lower()
+            if any(k in name_lower for k in ("collar", "gland", "flange_ring")) and c.parent:
                 parent = parts_by_name.get(c.parent)
-                if parent:
-                    parent_half_d = float(parent.dimensions.get("depth", parent.dimensions.get("height", 0.15))) / 2.0
-                    gasket_r = round(collar_outer_r * 1.12, 4)  # Clearly visible gasket rim extending beyond collar!
-                    gasket_d = 0.045
-                    c.dimensions = {"radius": gasket_r, "inner_radius": pipe_r, "depth": gasket_d}
-                    c.primitive = "cylinder"
-                    c.offset = [0.0, 0.0, -round(parent_half_d + (gasket_d / 2.0), 4)]  # Seated firmly below collar!
-                    c.rotation_deg = [0.0, 0.0, 0.0]
-                    if c.material:
-                        c.material.name = "Industrial_Silicone_Gasket_Rubber"
-                        c.material.color = [0.82, 0.28, 0.16, 1.0]  # High-contrast terracotta red industrial gasket
-                        c.material.metallic = 0.0
-                        c.material.roughness = 0.90
+                if parent and "radius" in parent.dimensions:
+                    p_r = float(parent.dimensions["radius"])
+                    curr_r = float(c.dimensions.get("radius", 0.0))
+                    if curr_r < p_r * 1.15:
+                        c.primitive = "cylinder"
+                        c.dimensions["radius"] = round(p_r * 1.30, 4)
+                        c.dimensions["inner_radius"] = round(p_r, 4)
 
-        # 2. Robotic Gripper Assembly: Hub, Jaws, Bushings, Pads
-        hub = None
-        for c in bp.components:
-            if any(k in c.name.lower() for k in ("hub", "servo_mount", "base_mount")):
-                hub = c
-                break
-
-        if hub:
-            hub.primitive = "cylinder"
-            hub.dimensions = {"radius": 0.14, "depth": 0.28}
-            hub.offset = [0.0, 0.0, 0.15]
-            if hub.material:
-                hub.material.name = "Matte_Black_Cylindrical_Servo_Hub"
-                hub.material.color = [0.10, 0.10, 0.12, 1.0]
-                hub.material.metallic = 0.10
-                hub.material.roughness = 0.80
-
-        # Bushings: Left and Right
-        for c in bp.components:
-            if "bushing" in c.name.lower():
-                c.primitive = "cylinder"
-                c.dimensions = {"radius": 0.050, "depth": 0.16}
-                c.rotation_deg = [90.0, 0.0, 0.0]
-                is_left = "left" in c.name.lower() or ("right" not in c.name.lower() and "1" in c.name.lower())
-                c.parent = hub.name if hub else None
-                c.offset = [-0.16 if is_left else 0.16, 0.0, 0.0]
-                if c.material:
-                    c.material.name = "Polished_Brass"
-                    c.material.color = [0.98, 0.82, 0.10, 1.0]
-                    c.material.metallic = 0.85
-                    c.material.roughness = 0.15
-
-        # Claw Arms: Left and Right
-        jaws = [
-            c for c in bp.components
-            if any(k in c.name.lower() for k in ("claw", "jaw", "arm"))
-            and c.parent
-            and "finger" not in c.name.lower()
-            and "pad" not in c.name.lower()
-            and "bushing" not in c.name.lower()
-        ]
-        if len(jaws) >= 2:
-            jaws.sort(key=lambda j: j.name)
-            left_jaw, right_jaw = jaws[0], jaws[1]
-
-            left_jaw.primitive = "cylinder"
-            left_jaw.dimensions = {"radius": 0.040, "depth": 0.32}
-            left_jaw.offset = [-0.16, 0.0, -0.12]
-            left_jaw.rotation_deg = [0.0, 22.0, 0.0]
-            if left_jaw.material:
-                left_jaw.material.name = "Structural_Steel_Left_Claw"
-                left_jaw.material.color = [0.85, 0.88, 0.92, 1.0]
-                left_jaw.material.metallic = 0.85
-                left_jaw.material.roughness = 0.20
-
-            right_jaw.primitive = "cylinder"
-            right_jaw.dimensions = {"radius": 0.040, "depth": 0.32}
-            right_jaw.offset = [0.16, 0.0, -0.12]
-            right_jaw.rotation_deg = [0.0, -22.0, 0.0]
-            if right_jaw.material:
-                right_jaw.material.name = "Structural_Steel_Right_Claw"
-                right_jaw.material.color = [0.85, 0.88, 0.92, 1.0]
-                right_jaw.material.metallic = 0.85
-                right_jaw.material.roughness = 0.20
-
-            # Dual fingers: 2 on left arm, 2 on right arm
-            left_fingers = [c for c in bp.components if "finger" in c.name.lower() and ("left" in c.name.lower() or "1" in c.name.lower()) and "right" not in c.name.lower()]
-            right_fingers = [c for c in bp.components if "finger" in c.name.lower() and "right" in c.name.lower()]
-
-            while len(left_fingers) < 2:
-                idx = len(left_fingers) + 1
-                f = SpatialComponent(
-                    name=f"finger_left_{idx}",
-                    parent=left_jaw.name,
-                    primitive="cylinder",
-                    dimensions={"radius": 0.022, "depth": 0.24},
-                    offset=[0.03, 0.06 if idx == 1 else -0.06, -0.18],
-                    rotation_deg=[0.0, 12.0, 0.0],
-                    material=MaterialSpec("Polished_Chrome", [0.92, 0.95, 1.0, 1.0], 0.85, 0.15),
-                )
-                bp.components.append(f)
-                left_fingers.append(f)
-                parts_by_name[f.name] = f
-
-            while len(right_fingers) < 2:
-                idx = len(right_fingers) + 1
-                f = SpatialComponent(
-                    name=f"finger_right_{idx}",
-                    parent=right_jaw.name,
-                    primitive="cylinder",
-                    dimensions={"radius": 0.022, "depth": 0.24},
-                    offset=[-0.03, 0.06 if idx == 1 else -0.06, -0.18],
-                    rotation_deg=[0.0, -12.0, 0.0],
-                    material=MaterialSpec("Polished_Chrome", [0.92, 0.95, 1.0, 1.0], 0.85, 0.15),
-                )
-                bp.components.append(f)
-                right_fingers.append(f)
-                parts_by_name[f.name] = f
-
-            for i, f in enumerate(left_fingers):
-                f.parent = left_jaw.name
-                f.primitive = "cylinder"
-                f.dimensions = {"radius": 0.022, "depth": 0.24}
-                f.offset = [0.03, 0.06 if i == 0 else -0.06, -0.18]
-                f.rotation_deg = [0.0, 12.0, 0.0]
-                if f.material:
-                    f.material.name = "Polished_Chrome"
-                    f.material.color = [0.92, 0.95, 1.0, 1.0]
-                    f.material.metallic = 0.85
-                    f.material.roughness = 0.15
-
-            for i, f in enumerate(right_fingers):
-                f.parent = right_jaw.name
-                f.primitive = "cylinder"
-                f.dimensions = {"radius": 0.022, "depth": 0.24}
-                f.offset = [-0.03, 0.06 if i == 0 else -0.06, -0.18]
-                f.rotation_deg = [0.0, -12.0, 0.0]
-                if f.material:
-                    f.material.name = "Polished_Chrome"
-                    f.material.color = [0.92, 0.95, 1.0, 1.0]
-                    f.material.metallic = 0.85
-                    f.material.roughness = 0.15
-
-            # Rubber Grip Pads: Attach prominently to the inner gripping faces of the fingers!
-            pads = [c for c in bp.components if "pad" in c.name.lower()]
-            all_fingers = left_fingers[:2] + right_fingers[:2]
-            while len(pads) < 4:
-                idx = len(pads) + 1
-                p = SpatialComponent(
-                    name=f"rubber_grip_pad_{idx}",
-                    parent=all_fingers[(idx - 1) % len(all_fingers)].name,
-                    primitive="cube",
-                    dimensions={"size": [0.035, 0.05, 0.12]},
-                    offset=[0.035 if "left" in all_fingers[(idx - 1) % len(all_fingers)].name else -0.035, 0.0, -0.08],
-                    rotation_deg=[0.0, 0.0, 0.0],
-                    material=MaterialSpec("High_Friction_Textured_Rubber", [0.06, 0.06, 0.08, 1.0], 0.0, 0.95),
-                )
-                bp.components.append(p)
-                pads.append(p)
-                parts_by_name[p.name] = p
-
-            for i, p in enumerate(pads):
-                target_finger = all_fingers[i % len(all_fingers)]
-                p.parent = target_finger.name
-                p.primitive = "cube"
-                p.dimensions = {"size": [0.035, 0.05, 0.12]}
-                is_left_finger = "left" in target_finger.name
-                p.offset = [0.035 if is_left_finger else -0.035, 0.0, -0.08]
-                p.rotation_deg = [0.0, 0.0, 0.0]
-                if p.material:
-                    p.material.name = "High_Friction_Textured_Rubber"
-                    p.material.color = [0.06, 0.06, 0.08, 1.0]
-                    p.material.metallic = 0.0
-                    p.material.roughness = 0.95
-
-        # 3. Rocket Gimbal Assembly: Gimbal Ring Cradle, Chamber, Trunnion, Nozzle, Dome, Feed Lines
-        gimbal_ring = None
-        chamber = None
-        dome = None
+        # 3. Overhead Controls & End Caps Directional Consistency
         for c in bp.components:
             name_l = c.name.lower()
-            if "gimbal" in name_l or "cradle" in name_l:
-                gimbal_ring = c
-            elif "chamber" in name_l:
-                chamber = c
-            elif "dome" in name_l or "injector" in name_l:
-                dome = c
+            if any(k in name_l for k in ("overhead", "handwheel", "top_cap", "bonnet", "knob", "focuser")) and c.parent:
+                if c.offset[2] < 0.0:
+                    c.offset[2] = abs(c.offset[2])
 
-        # Auto-synthesize missing combustion chamber if needed
-        if not chamber and any(k in bp.assembly_name.lower() for k in ("rocket", "engine", "gimbal")):
-            chamber = SpatialComponent(
-                name="combustion_chamber",
-                parent=gimbal_ring.name if gimbal_ring else None,
-                primitive="cylinder",
-                dimensions={"radius": 0.42, "depth": 1.30},
-                offset=[0.0, 0.0, 0.0],
-                rotation_deg=[0.0, 20.0, 0.0],
-                material=MaterialSpec(name="Burnished_Copper", color=[0.94, 0.44, 0.12, 1.0], metallic=0.70, roughness=0.25),
-            )
-            bp.components.append(chamber)
-            parts_by_name[chamber.name] = chamber
+        # 3b. Concentric Shaft Centering & Visible Radius Clamping
+        for c in bp.components:
+            name_l = c.name.lower()
+            if any(k in name_l for k in ("shaft", "rotor", "snout", "spindle", "core")) and "tie_rod" not in name_l:
+                c.offset[0] = 0.0
+                c.offset[1] = 0.0
+                if "radius" in c.dimensions and float(c.dimensions["radius"]) < 0.008:
+                    c.dimensions["radius"] = 0.008
 
-        if chamber:
-            chamber_d = float(chamber.dimensions.get("depth", 1.30))
-            chamber.dimensions = {"radius": 0.42, "depth": chamber_d}
-            chamber.primitive = "cylinder"
-            chamber.offset = [0.0, 0.0, 0.0]
-            chamber.rotation_deg = [0.0, 20.0, 0.0]  # Clear 20° gimbal tilt visible in front and top views!
-            if chamber.material:
-                chamber.material.name = "Burnished_Copper_Combustion_Chamber"
-                chamber.material.color = [0.94, 0.44, 0.12, 1.0]
-                chamber.material.metallic = 0.70
-                chamber.material.roughness = 0.25
+        # 3c. Longitudinal Tie-Rods & Corner Fasteners Protrusion
+        for c in bp.components:
+            name_l = c.name.lower()
+            if any(k in name_l for k in ("tie_rod", "tie-rod", "thru_bolt", "corner_rod")):
+                parent = parts_by_name.get(c.parent)
+                if parent:
+                    p_d = float(parent.dimensions.get("depth", parent.dimensions.get("size", [0, 0, 0.08])[2] if isinstance(parent.dimensions.get("size"), (list, tuple)) else 0.08))
+                    curr_d = float(c.dimensions.get("depth", 0.0))
+                    if curr_d <= p_d:
+                        c.dimensions["depth"] = round(p_d * 1.25, 4)
+                    if float(c.dimensions.get("radius", 0.0)) < 0.005:
+                        c.dimensions["radius"] = 0.005
 
-            if gimbal_ring:
-                gimbal_ring.parent = None
-                gimbal_ring.primitive = "torus"
-                gimbal_ring.dimensions = {"major_radius": 0.90, "minor_radius": 0.09}
-                gimbal_ring.offset = [0.0, 0.0, 0.0]
-                gimbal_ring.rotation_deg = [0.0, 0.0, 0.0]
-                chamber.parent = gimbal_ring.name
-                if gimbal_ring.material:
-                    gimbal_ring.material.name = "Aerospace_Titanium_Gimbal_Ring"
-                    gimbal_ring.material.color = [0.22, 0.45, 0.78, 1.0]  # Aerospace Titanium Anodized Blue
-                    gimbal_ring.material.metallic = 0.60
-                    gimbal_ring.material.roughness = 0.25
+        # 4. Internal Concentric Component Visibility (Bores & Extending Shafts)
+        for c in bp.components:
+            if c.parent and abs(c.offset[0]) < 1e-4 and abs(c.offset[1]) < 1e-4:
+                parent = parts_by_name.get(c.parent)
+                if not parent:
+                    continue
+                if any(k in c.name.lower() for k in ("shaft", "rotor", "bearing", "spindle", "core")):
+                    p_d = float(parent.dimensions.get("depth", parent.dimensions.get("size", [0, 0, 0.4])[2] if isinstance(parent.dimensions.get("size"), (list, tuple)) else 0.4))
+                    c_d = float(c.dimensions.get("depth", c.dimensions.get("size", [0, 0, 0.4])[2] if isinstance(c.dimensions.get("size"), (list, tuple)) else 0.4))
+                    if c_d <= p_d:
+                        new_d = round(p_d * 1.35, 4)
+                        if "depth" in c.dimensions:
+                            c.dimensions["depth"] = new_d
+                        elif "size" in c.dimensions and isinstance(c.dimensions["size"], list):
+                            c.dimensions["size"][2] = new_d
 
-            # Horizontal Pivot Trunnion Pins (cradled in gimbal ring)
-            has_trunnion = any(any(k in c.name.lower() for k in ("pivot", "trunnion", "bracket")) for c in bp.components)
-            if not has_trunnion:
-                trunnion = SpatialComponent(
-                    name="nozzle_pivot_trunnion",
-                    parent=chamber.name,
-                    primitive="cylinder",
-                    dimensions={"radius": 0.06, "depth": 1.90},
-                    offset=[0.0, 0.0, 0.0],
-                    rotation_deg=[90.0, 0.0, 0.0],
-                    material=MaterialSpec(name="High_Strength_Alloy_Pivot", color=[0.88, 0.90, 0.95, 1.0], metallic=0.85, roughness=0.15),
-                )
-                bp.components.append(trunnion)
-                parts_by_name[trunnion.name] = trunnion
-            else:
-                for c in bp.components:
-                    if ("pivot" in c.name.lower() or "trunnion" in c.name.lower() or "bracket" in c.name.lower()) or c.name in ("nozzle_pivot_bracket", "nozzle_pivot_trunnion"):
-                        c.parent = chamber.name
-                        c.primitive = "cylinder"
-                        c.dimensions = {"radius": 0.06, "depth": 1.90}
-                        c.offset = [0.0, 0.0, 0.0]
-                        c.rotation_deg = [90.0, 0.0, 0.0]
-                        if c.material:
-                            c.material.name = "High_Strength_Alloy_Pivot"
-                            c.material.color = [0.88, 0.90, 0.95, 1.0]
-                            c.material.metallic = 0.85
-                            c.material.roughness = 0.15
+        # 5. Linear Array Spacing for Indexed Features (teeth, fins, blades across parent width)
+        array_groups: dict[str, list[SpatialComponent]] = {}
+        for c in bp.components:
+            if c.parent and re.search(r"_\d+$", c.name):
+                base_prefix = re.sub(r"_\d+$", "", c.name)
+                array_groups.setdefault(f"{c.parent}:{base_prefix}", []).append(c)
 
-            # Conical Bell Exhaust Nozzle (bottom of chamber, inherits 20° tilt)
-            for c in bp.components:
-                name_l = c.name.lower()
-                if ("nozzle" in name_l or "bell" in name_l) and c.name not in ("nozzle_pivot_bracket", "nozzle_pivot_trunnion"):
-                    c.parent = chamber.name
-                    d_noz = 1.25
-                    c.dimensions = {"radius_bottom": 0.96, "radius_top": 0.32, "depth": d_noz}
-                    c.primitive = "cone"
-                    c.offset = [0.0, 0.0, -round((chamber_d / 2.0) + (d_noz / 2.0), 4)]
-                    c.rotation_deg = [0.0, 0.0, 0.0]
-                    if c.material:
-                        c.material.name = "Burnished_Copper_Bell_Nozzle"
-                        c.material.color = [0.94, 0.44, 0.12, 1.0]
-                        c.material.metallic = 0.70
-                        c.material.roughness = 0.25
-
-            # Injector Dome (top of chamber, inherits 20° tilt)
-            if dome:
-                dome.parent = chamber.name
-                dome_r = 0.42
-                dome.primitive = "uv_sphere"
-                dome.dimensions = {"radius": dome_r}
-                dome.offset = [0.0, 0.0, round((chamber_d / 2.0) + (dome_r * 0.35), 4)]
-                dome.rotation_deg = [0.0, 0.0, 0.0]
-                if dome.material:
-                    dome.material.name = "Aerospace_Titanium_Injector_Dome"
-                    dome.material.color = [0.22, 0.45, 0.78, 1.0]  # Distinct aerospace titanium blue
-                    dome.material.metallic = 0.60
-                    dome.material.roughness = 0.25
-
-                # 4 Overhead Turbopump Feed Pipes entering the dome firmly
-                existing_pipes = [
-                    c for c in bp.components
-                    if any(k in c.name.lower() for k in ("feed_pipe", "fuel_pipe", "feed_line", "turbopump"))
-                ]
-                while len(existing_pipes) < 4:
-                    idx = len(existing_pipes) + 1
-                    new_pipe = SpatialComponent(
-                        name=f"fuel_turbopump_feed_pipe_{idx}",
-                        parent=dome.name,
-                        primitive="cylinder",
-                        dimensions={"radius": 0.04, "depth": 0.90},
-                        offset=[0.0, 0.0, 0.35],
-                        rotation_deg=[0.0, 0.0, 0.0],
-                        material=MaterialSpec(name="Stainless_Steel_Feed_Lines", color=[0.95, 0.98, 1.0, 1.0], metallic=0.85, roughness=0.15),
-                    )
-                    bp.components.append(new_pipe)
-                    existing_pipes.append(new_pipe)
-                    parts_by_name[new_pipe.name] = new_pipe
-
-                existing_pipes.sort(key=lambda p: p.name)
-                pipe_pitch = 0.26
-                # Non-occluding azimuths so all 4 pipes are distinctly separated in Front view!
-                azimuth_deg = [30.0, 120.0, 210.0, 300.0]
-                for i, pipe in enumerate(existing_pipes):
-                    pipe_d = 0.90
-                    ang = math.radians(azimuth_deg[i % len(azimuth_deg)])
-                    pipe.parent = dome.name
-                    pipe.primitive = "cylinder"
-                    pipe.dimensions = {"radius": 0.050, "depth": pipe_d}
-                    # Penetrate 0.20m into the dome so they are firmly welded/connected with no air gap!
-                    pipe.offset = [
-                        round(pipe_pitch * math.cos(ang), 4),
-                        round(pipe_pitch * math.sin(ang), 4),
-                        round((dome_r * 0.15) + (pipe_d / 2.0), 4),
-                    ]
-                    pipe.rotation_deg = [0.0, 0.0, 0.0]
-                    if pipe.material:
-                        pipe.material.name = "Stainless_Steel_Feed_Lines"
-                        pipe.material.color = [0.75, 0.78, 0.84, 1.0]
-                        pipe.material.metallic = 0.85
-                        pipe.material.roughness = 0.15
+        for grp_key, items in array_groups.items():
+            if len(items) >= 2:
+                parent_name = grp_key.split(":")[0]
+                parent = parts_by_name.get(parent_name)
+                if not parent:
+                    continue
+                x_offsets = {round(it.offset[0], 2) for it in items}
+                if len(x_offsets) <= 1:
+                    p_w = float(parent.dimensions.get("size", [1.0, 1.0, 1.0])[0] if isinstance(parent.dimensions.get("size"), (list, tuple)) else parent.dimensions.get("radius", 0.5) * 2.0)
+                    n_items = len(items)
+                    items.sort(key=lambda x: x.name)
+                    step = (p_w * 0.85) / max(n_items - 1, 1)
+                    start_x = -p_w * 0.425
+                    for idx, it in enumerate(items):
+                        it.offset[0] = round(start_x + idx * step, 4)
 
     def _generate_fallback_blueprint(self, goal: str, tier: int, stages: int) -> SpatialBlueprint:
         """Fallback blueprint when generation returns invalid JSON."""
@@ -1010,6 +1026,7 @@ def compile_blueprint_to_bpy(blueprint: SpatialBlueprint, output_obj_path: str) 
         f"# Assembly: {blueprint.assembly_name} (Tier {blueprint.tier}, {blueprint.lod_levels_count} LoD Stages)",
         "import bpy",
         "import math",
+        "import mathutils",
         "",
         "# 1. Initialize pristine scene",
         "bpy.ops.wm.read_factory_settings(use_empty=True)",
@@ -1132,9 +1149,28 @@ def compile_blueprint_to_bpy(blueprint: SpatialBlueprint, output_obj_path: str) 
                     s = s[0]
                 lines.append(f"bpy.ops.mesh.primitive_cube_add(size={float(s):.4f})")
 
+            inner_r = float(dims.get("inner_radius", dims.get("bore_radius", dims.get("hole_radius", 0.0))))
+            if inner_r > 0.0:
+                bore_axis = str(dims.get("bore_axis", "y")).lower()
+                lines.append("target_cube = bpy.context.active_object")
+                lines.append(f"bpy.ops.mesh.primitive_cylinder_add(radius={inner_r:.4f}, depth=4.0, vertices=32)")
+                lines.append("cutter = bpy.context.active_object")
+                if bore_axis == "y":
+                    lines.append("cutter.rotation_euler = (math.radians(90), 0, 0)")
+                elif bore_axis == "x":
+                    lines.append("cutter.rotation_euler = (0, math.radians(90), 0)")
+                lines.append("mod = target_cube.modifiers.new(name='CubeBore', type='BOOLEAN')")
+                lines.append("mod.object = cutter")
+                lines.append("mod.operation = 'DIFFERENCE'")
+                lines.append("bpy.context.view_layer.objects.active = target_cube")
+                lines.append("bpy.ops.object.modifier_apply(modifier='CubeBore')")
+                lines.append("bpy.data.objects.remove(cutter, do_unlink=True)")
+
         lines.append(f"obj = bpy.context.active_object")
         lines.append(f"obj.name = '{c.name}'")
         lines.append(f"objects['{c.name}'] = obj")
+        lines.append("if obj.type == 'MESH':")
+        lines.append("    bpy.ops.object.shade_smooth()")
 
         # Parent linking FIRST: Setting parent before setting location ensures location is LOCAL!
         if c.parent and c.parent in created:
@@ -1169,6 +1205,24 @@ def compile_blueprint_to_bpy(blueprint: SpatialBlueprint, output_obj_path: str) 
             lines.append(f"obj.data.materials.append(mat_{name_clean})")
 
         lines.append("")
+
+    # 2b. Global Ground Datum Clamp (ensure min_world_z == 0.0)
+    lines.extend([
+        "# 2b. Global Ground Datum Clamp (ensure assembly rests precisely on Z=0.0)",
+        "bpy.context.view_layer.update()",
+        "mesh_objs = [o for o in objects.values() if o.type == 'MESH']",
+        "if mesh_objs:",
+        "    min_world_z = min(",
+        "        (o.matrix_world @ mathutils.Vector(corner)).z",
+        "        for o in mesh_objs",
+        "        for corner in o.bound_box",
+        "    )",
+        "    root_objs = [o for o in objects.values() if o.parent is None]",
+        "    for ro in root_objs:",
+        "        ro.location.z -= min_world_z",
+        "    bpy.context.view_layer.update()",
+        "",
+    ])
 
     # OBJ Export
     lines.extend([
