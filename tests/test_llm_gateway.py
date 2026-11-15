@@ -35,3 +35,23 @@ def test_synthesize_blender_script_fallback():
     assert "import bpy" in code
     assert "test_sword.obj" in code
     assert "obj_export" in code
+
+
+def test_llm_gateway_two_stage_blueprint_pipeline():
+    class MockGateway(LLMGateway):
+        def generate(self, **kwargs):
+            prompt = kwargs.get("prompt", "")
+            system = kwargs.get("system", "")
+            if "Senior Mechanical Assembly Architect" in system:
+                return '{"root_part": "Base", "overall_height": 1.2, "parts": [{"name": "Base", "location": [0,0,0.5]}]}'
+            elif "3D Model Synthesizer" in system:
+                return '```python\nimport bpy\n# synthesized from blueprint\nbpy.ops.mesh.primitive_cylinder_add(location=(0,0,0.5))\nbpy.ops.wm.obj_export(filepath=r"out.obj")\n```'
+            return ""
+
+    gw = MockGateway()
+    plan = gw.plan_3d_assembly("telescope")
+    assert "root_part" in plan
+    code = gw.generate_blender_code("telescope", "out.obj")
+    assert "import bpy" in code
+    assert "primitive_cylinder_add" in code
+    assert "out.obj" in code

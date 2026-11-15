@@ -44,8 +44,11 @@ Desktop.ini
 # SQLite & Data
 *.db-wal
 *.db-shm
+*.db
 data/
 workspaces/
+scratch/
+test_blueprint_tele_inspection/
 *.sqlite-wal
 *.sqlite-shm
 

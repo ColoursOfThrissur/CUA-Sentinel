@@ -109,6 +109,60 @@ def test_harsh_critic_programmatic_rubric_evaluation():
     assert card.material_separation == 24
 
 
+def test_harsh_critic_rejects_generic_primitive_clusters():
+    critic = HarshCritic(llm_gateway=None, passing_threshold=0.82)
+    # Generic unarticulated primitives with default names
+    junk_insp = ModelInspectionResult(
+        success=True,
+        metrics={
+            "object_count": 5,
+            "part_names": ["Cone", "Cone.001", "Cylinder", "Cylinder.001", "Sphere"],
+            "vertex_count": 800,
+            "face_count": 600,
+            "non_manifold_edges": 0,
+            "material_count": 5,
+            "materials": ["Mat1", "Mat2", "Mat3", "Mat4", "Mat5"],
+            "bounding_box": {"dx": 1.5, "dy": 1.2, "dz": 2.0, "volume": 3.6},
+        },
+        is_degenerate=False,
+    )
+
+    card = critic.evaluate_3d_model("Build an articulated equatorial telescope with brass mount", junk_insp)
+    assert card.passed is False
+    assert card.score < 0.82
+    assert card.anti_pattern_signature == "GENERIC_PRIMITIVE_CLUSTER"
+    assert "generic primitives" in card.critique
+
+
+def test_harsh_critic_vision_evaluation_flow(tmp_path: Path):
+    class MockGateway:
+        default_model = "qwen2.5-coder:14b"
+        def is_available(self): return True
+        def generate(self, **kwargs):
+            assert kwargs.get("model") == "qwen3-vl:8b"
+            assert "images" in kwargs and len(kwargs["images"]) == 1
+            return '{"visual_resemblance": 4, "component_alignment": 3, "material_contrast": 8, "functional_proportion": 2, "critique": "Floating sphere and unattached primitives.", "remediation_advice": "Attach optical tube to tripod mount.", "anti_pattern": "FLOATING_PRIMITIVES"}'
+
+    dummy_png = tmp_path / "iso.png"
+    dummy_png.write_bytes(b"\x89PNG\r\n\x1a\nfake_image_bytes")
+
+    insp = ModelInspectionResult(
+        success=True,
+        metrics={"object_count": 4, "part_names": ["Tube", "Shield", "Leg1", "Leg2"]},
+        snapshots={"iso": str(dummy_png)},
+        is_degenerate=False,
+    )
+
+    critic = HarshCritic(llm_gateway=MockGateway(), passing_threshold=0.82)
+    card = critic.evaluate_3d_model("Build an equatorial telescope", insp)
+    assert card.evaluation_mode == "vision"
+    assert card.passed is False
+    assert card.score == 0.17
+    assert card.structural_integrity == 3
+    assert card.feature_specificity == 4
+    assert card.anti_pattern_signature == "FLOATING_PRIMITIVES"
+
+
 def test_curriculum_generator_produces_challenges():
     curriculum = CurriculumGenerator()
     c1 = curriculum.generate_next_challenge(domain="3d")

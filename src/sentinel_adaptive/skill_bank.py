@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -81,6 +82,23 @@ class SkillBank:
         except Exception as e:
             logger.debug("Skill vector index hydration skipped: %s", e)
 
+    def purge_empty_skills(self) -> int:
+        """Purges corrupted 0-byte or trivial skills (<50 bytes) from catalog and vector memory."""
+        rows = self.db.execute_read("SELECT name, code FROM skills WHERE length(trim(code)) < 50")
+        purged_count = 0
+        with self.db.transaction() as c:
+            for r in rows:
+                c.execute("DELETE FROM skills WHERE name = ?", (r["name"],))
+                folder = self.skills_dir / r["name"]
+                if folder.exists():
+                    shutil.rmtree(folder, ignore_errors=True)
+                purged_count += 1
+
+        if purged_count > 0:
+            logger.info("Purged %d corrupted/empty skills from SkillBank.", purged_count)
+            self._hydrate_vector_index()
+        return purged_count
+
     def distill_skill(
         self,
         name: str,
@@ -93,6 +111,10 @@ class SkillBank:
         registry: ToolRegistry | None = None,
     ) -> dict[str, Any]:
         """Saves a verified attempt code/artifact as a distilled reusable skill."""
+        cleaned_code = (code or "").strip()
+        if not cleaned_code:
+            raise ValueError(f"Cannot distill skill '{name}': code payload cannot be empty")
+
         eff_str = effect_class.value if isinstance(effect_class, EffectClass) else effect_class
         schema = parameters_schema or {}
         meta = metadata or {}
@@ -115,7 +137,7 @@ class SkillBank:
                     verified_at = excluded.verified_at,
                     metadata = excluded.metadata
                 """,
-                (skill_id, name, description, code, now, meta_str),
+                (skill_id, name, description, cleaned_code, now, meta_str),
             )
 
         # Get updated version number
@@ -125,6 +147,10 @@ class SkillBank:
         # 2. Persist to filesystem as skill folder with SKILL.md
         skill_folder = self.skills_dir / name
         skill_folder.mkdir(parents=True, exist_ok=True)
+
+        blueprint_section = ""
+        if "spatial_blueprint" in meta and meta["spatial_blueprint"]:
+            blueprint_section = f"\n## Spatial Blueprint\n```json\n{json.dumps(meta['spatial_blueprint'], indent=2)}\n```\n"
 
         md_doc = f"""---
 name: {name}
@@ -141,14 +167,14 @@ effect_class: {eff_str}
 ```json
 {json.dumps(schema, indent=2)}
 ```
-
+{blueprint_section}
 ## Implementation
 ```python
-{code}
+{cleaned_code}
 ```
 """
         (skill_folder / "SKILL.md").write_text(md_doc, encoding="utf-8")
-        (skill_folder / "tool.py").write_text(code, encoding="utf-8")
+        (skill_folder / "tool.py").write_text(cleaned_code, encoding="utf-8")
 
         skill_record = {
             "id": skill_id,

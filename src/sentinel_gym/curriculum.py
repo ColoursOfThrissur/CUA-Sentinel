@@ -102,16 +102,24 @@ class CurriculumGenerator:
         self,
         domain: str = "3d",
         prefer_frontier: bool = True,
+        force_frontier: bool = False,
     ) -> CurriculumChallenge:
         """Selects or dynamically synthesizes the next training task."""
         now_ts = int(time.time() * 1000)
         challenge_id = f"gym_task_{now_ts % 1000000}"
 
-        # 1. Filter standard library challenges matching domain
         matching = [c for c in FOUNDATIONAL_CHALLENGES if c["domain"] == domain]
         unseen = [c for c in matching if c["goal"] not in self._history]
-        pool = unseen if unseen else matching
 
+        # 1. Dynamic Frontier Synthesis via LLM if available and preferred
+        if (force_frontier or (prefer_frontier and (not unseen or random.random() < 0.50))) and self.gateway:
+            dynamic = self._synthesize_frontier_challenge(domain, challenge_id)
+            if dynamic:
+                self._history.append(dynamic.goal)
+                return dynamic
+
+        # 2. Select from foundational challenges pool
+        pool = unseen if unseen else matching
         if pool:
             chosen = random.choice(pool)
             self._history.append(chosen["goal"])
@@ -134,3 +142,65 @@ class CurriculumGenerator:
             expected_features=["base", "shaft", "joint", "materials"],
             category="mechanics",
         )
+
+    def _synthesize_frontier_challenge(self, domain: str, challenge_id: str) -> CurriculumChallenge | None:
+        """Synthesizes a novel, frontier challenge targeting recent agent mistakes and mastered skills."""
+        mastered = []
+        if self.skill_bank:
+            mastered = [s["name"] for s in self.skill_bank.list_skills()[:6]]
+
+        recent_defects = []
+        if self.mistake_memory:
+            try:
+                rows = self.mistake_memory.db.execute_read(
+                    "SELECT error_category, error_signature, lesson_learned FROM mistake_ledger ORDER BY ts DESC LIMIT 4"
+                )
+                recent_defects = [f"{r['error_category']}: {r['lesson_learned'][:70]}" for r in rows]
+            except Exception:
+                pass
+
+        sys_prompt = (
+            "You are Sentinel's Curriculum Architect for autonomous agent training.\n"
+            "Your job is to generate a novel, specific engineering task that pushes the agent's capability frontier.\n"
+            "Requirements:\n"
+            "- 3D tasks must specify multi-part articulated components, distinct physical materials (metals, enamels, rubber), and clear spatial structure.\n"
+            "- Data tasks must specify realistic columns, constraints, and statistical distributions.\n"
+            "Output strictly valid JSON with keys: goal, difficulty_tier (1-5), category, expected_features (list of 4-6 strings)."
+        )
+
+        user_prompt = (
+            f"Generate a novel training challenge for domain: {domain.upper()}.\n"
+            f"Agent has already mastered: {', '.join(mastered) if mastered else 'basic primitives'}.\n"
+            f"Agent recently struggled with: {'; '.join(recent_defects) if recent_defects else 'none'}.\n"
+            "Challenge should be concrete, descriptive, and avoid repetition."
+        )
+
+        try:
+            resp = self.gateway.generate(
+                prompt=user_prompt,
+                system=sys_prompt,
+                temperature=0.7,
+                max_tokens=300,
+            )
+            clean = resp.strip()
+            if "```json" in clean:
+                clean = clean.split("```json")[1].split("```")[0].strip()
+            elif "```" in clean:
+                clean = clean.split("```")[1].split("```")[0].strip()
+
+            data = json.loads(clean)
+            goal_text = data.get("goal", "").strip()
+            if goal_text and len(goal_text) > 30 and goal_text not in self._history:
+                logger.info("Curriculum synthesized dynamic frontier challenge: %s", goal_text[:80])
+                return CurriculumChallenge(
+                    challenge_id=challenge_id,
+                    goal=goal_text,
+                    domain=domain,
+                    difficulty_tier=max(1, min(5, int(data.get("difficulty_tier", 3)))),
+                    expected_features=data.get("expected_features", ["component_assembly", "contrasting_materials"]),
+                    category=data.get("category", "frontier_synthesis"),
+                )
+        except Exception as e:
+            logger.debug("Curriculum dynamic frontier synthesis fallback: %s", e)
+
+        return None

@@ -99,6 +99,7 @@ total_edges = 0
 non_manifold_edges = 0
 materials_set = set()
 part_names = []
+part_details = {}
 
 min_coord = [float('inf')] * 3
 max_coord = [float('-inf')] * 3
@@ -110,9 +111,11 @@ for obj in imported_objs:
     total_faces += len(me.polygons)
     total_edges += len(me.edges)
 
+    p_mats = []
     for mat_slot in obj.material_slots:
         if mat_slot.material:
             materials_set.add(mat_slot.material.name)
+            p_mats.append(mat_slot.material.name)
 
     # Check non-manifold geometry via bmesh
     bm = bmesh.new()
@@ -123,11 +126,27 @@ for obj in imported_objs:
     bm.free()
 
     # Bounding box in world coordinates
+    obj_min = [float('inf')] * 3
+    obj_max = [float('-inf')] * 3
     for corner in obj.bound_box:
         w_corner = obj.matrix_world @ Vector(corner)
         for i in range(3):
             if w_corner[i] < min_coord[i]: min_coord[i] = w_corner[i]
             if w_corner[i] > max_coord[i]: max_coord[i] = w_corner[i]
+            if w_corner[i] < obj_min[i]: obj_min[i] = w_corner[i]
+            if w_corner[i] > obj_max[i]: obj_max[i] = w_corner[i]
+
+    p_center = [(obj_min[i] + obj_max[i]) / 2.0 for i in range(3)]
+    p_dx = max(0.0, obj_max[0] - obj_min[0])
+    p_dy = max(0.0, obj_max[1] - obj_min[1])
+    p_dz = max(0.0, obj_max[2] - obj_min[2])
+    part_details[obj.name] = {
+        "center": [round(c, 4) for c in p_center],
+        "bbox": {"dx": round(p_dx, 4), "dy": round(p_dy, 4), "dz": round(p_dz, 4)},
+        "min_z": round(obj_min[2], 4),
+        "max_z": round(obj_max[2], 4),
+        "materials": p_mats,
+    }
 
 dx = max(0.0, max_coord[0] - min_coord[0])
 dy = max(0.0, max_coord[1] - min_coord[1])
@@ -136,10 +155,24 @@ volume = dx * dy * dz
 center = [(min_coord[i] + max_coord[i]) / 2.0 for i in range(3)]
 radius = max(dx, dy, dz, 0.5)
 
+# Spatial metrics: ground contact & base spread
+ground_z = min_coord[2]
+ground_parts = [k for k, v in part_details.items() if abs(v["min_z"] - ground_z) < 0.1]
+ground_spread = 0.0
+if len(ground_parts) > 1:
+    for i in range(len(ground_parts)):
+        for j in range(i + 1, len(ground_parts)):
+            c1 = part_details[ground_parts[i]]["center"]
+            c2 = part_details[ground_parts[j]]["center"]
+            dist_xy = math.sqrt((c1[0] - c2[0])**2 + (c1[1] - c2[1])**2)
+            if dist_xy > ground_spread:
+                ground_spread = dist_xy
+
 metrics = {
     "success": True,
     "object_count": len(imported_objs),
     "part_names": part_names,
+    "part_details": part_details,
     "vertex_count": total_verts,
     "face_count": total_faces,
     "edge_count": total_edges,
@@ -151,6 +184,8 @@ metrics = {
         "dy": round(dy, 4),
         "dz": round(dz, 4),
         "volume": round(volume, 6),
+        "ground_z": round(ground_z, 4),
+        "ground_spread": round(ground_spread, 4),
     },
     "center": [round(c, 4) for c in center],
 }

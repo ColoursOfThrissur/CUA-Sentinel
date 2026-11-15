@@ -53,13 +53,30 @@ class AutoRefiner:
         """Translates empirical evaluation into permanent capability upgrades or anti-patterns."""
         # 1. High-Fidelity Promotion to Skill Bank (Score >= 0.82)
         if scorecard.passed:
+            # Fallback code recovery if empty string was passed
+            resolved_code = code_or_script.strip()
+            if not resolved_code and artifact_path and Path(artifact_path).exists():
+                art_p = Path(artifact_path)
+                if art_p.suffix in [".py", ".sh", ".sql", ".csv"]:
+                    try:
+                        resolved_code = art_p.read_text(encoding="utf-8", errors="ignore").strip()
+                    except Exception:
+                        pass
+
+            if not resolved_code:
+                logger.warning("AutoRefiner skipping skill distillation: synthesized code payload is empty")
+                return RefinementOutcome(
+                    action_taken="DISCARDED",
+                    summary="Artifact passed evaluation but code payload was empty.",
+                )
+
             slug = derive_semantic_slug(goal, domain=domain)
             desc = f"Verified high-fidelity {domain} procedural skill for: {goal}. Critic Score: {scorecard.score:.2f}/1.0."
             try:
                 skill_rec = self.skill_bank.distill_skill(
                     name=slug,
                     description=desc,
-                    code=code_or_script,
+                    code=resolved_code,
                     domain=domain,
                     parameters_schema={"goal": "str", "output_path": "str"},
                     metadata={"critic_score": scorecard.score, "features": scorecard.critique},

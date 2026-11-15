@@ -22,6 +22,7 @@ class PilotExecutionResult:
     success: bool
     distilled_skill: dict[str, Any] | None
     mistakes_encountered: list[dict[str, Any]]
+    synthesized_code: str | None = None
 
 
 class AdaptivePilotController:
@@ -147,6 +148,7 @@ class AdaptivePilotController:
                     success=True,
                     distilled_skill=distilled,
                     mistakes_encountered=self.mistake_memory.get_task_mistakes(task_id),
+                    synthesized_code=worker_output.get("synthesized_code"),
                 )
             else:
                 # 7b. Verification Failed -> Record Defect to Episodic Memory (with semantic LLM classification if available)
@@ -185,4 +187,5 @@ class AdaptivePilotController:
                         success=False,
                         distilled_skill=None,
                         mistakes_encountered=self.mistake_memory.get_task_mistakes(task_id),
+                        synthesized_code=worker_output.get("synthesized_code"),
                     )

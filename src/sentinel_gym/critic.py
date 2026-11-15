@@ -37,9 +37,15 @@ class CriticScorecard:
 class HarshCritic:
     """Rigorous empirical evaluator designed to eliminate false-positive exit-code passes."""
 
-    def __init__(self, llm_gateway: LLMGateway | None = None, passing_threshold: float = PASSING_THRESHOLD):
+    def __init__(
+        self,
+        llm_gateway: LLMGateway | None = None,
+        passing_threshold: float = PASSING_THRESHOLD,
+        vision_model: str = "qwen3-vl:8b",
+    ):
         self.gateway = llm_gateway
         self.passing_threshold = passing_threshold
+        self.vision_model = vision_model
 
     def evaluate_3d_model(
         self,
@@ -71,7 +77,64 @@ class HarshCritic:
         bbox = metrics.get("bounding_box", {})
         non_manifold = metrics.get("non_manifold_edges", 0)
 
-        # 2. Build structured sensory telemetry prompt
+        # 2. VISION CRITIC (Direct visual inspection of rendered artifact via local multimodal model)
+        iso_snapshot = inspection.snapshots.get("iso")
+        if self.gateway and iso_snapshot and Path(iso_snapshot).exists():
+            try:
+                img_bytes = Path(iso_snapshot).read_bytes()
+                img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+                vision_prompt = (
+                    "Evaluate this rendered 3D model against the user's design goal.\n"
+                    f"Goal: {goal}\n\n"
+                    "Evaluate strictly across 4 categories (each 0 to 25):\n"
+                    "1. visual_resemblance (0-25): Does the rendered image visually look like the intended object?\n"
+                    "2. component_alignment (0-25): Are components physically connected and aligned (e.g. tubes attached to mounts, legs touching ground and spread wide, knobs on tubes), or floating disconnected in space?\n"
+                    "3. material_contrast (0-25): Are materials visibly distinct and contrasting (e.g. brass vs enamel blue, metal vs rubber), or generic/monochromatic?\n"
+                    "4. functional_proportion (0-25): Are proportions, aspect ratios, and relative sizes mechanically realistic?\n\n"
+                    "Output strictly valid JSON with no markdown and no thinking:\n"
+                    '{"visual_resemblance": <int>, "component_alignment": <int>, "material_contrast": <int>, '
+                    '"functional_proportion": <int>, "critique": "<two sentences>", '
+                    '"remediation_advice": "<one specific instruction>", "anti_pattern": "<Short tag or null>"}'
+                )
+                vis_resp = self.gateway.generate(
+                    prompt=vision_prompt,
+                    model=self.vision_model,
+                    temperature=0.1,
+                    max_tokens=1500,
+                    images=[img_b64],
+                )
+                clean_vis = vis_resp.strip()
+                if "```json" in clean_vis:
+                    clean_vis = clean_vis.split("```json")[1].split("```")[0].strip()
+                elif "```" in clean_vis:
+                    clean_vis = clean_vis.split("```")[1].split("```")[0].strip()
+
+                data = json.loads(clean_vis)
+                v_res = max(0, min(25, int(data.get("visual_resemblance", 10))))
+                c_align = max(0, min(25, int(data.get("component_alignment", 10))))
+                m_cont = max(0, min(25, int(data.get("material_contrast", 10))))
+                f_prop = max(0, min(25, int(data.get("functional_proportion", 10))))
+
+                total_score = (v_res + c_align + m_cont + f_prop) / 100.0
+                passed = total_score >= self.passing_threshold
+
+                logger.info("Vision Critic completed evaluation: score=%.3f, passed=%s", total_score, passed)
+                return CriticScorecard(
+                    score=round(total_score, 3),
+                    passed=passed,
+                    structural_integrity=c_align,
+                    feature_specificity=v_res,
+                    material_separation=m_cont,
+                    proportion_realism=f_prop,
+                    critique=data.get("critique", "Vision inspection complete."),
+                    remediation_advice=data.get("remediation_advice", "Align sub-components and improve material definition."),
+                    anti_pattern_signature=data.get("anti_pattern") if not passed else None,
+                    evaluation_mode="vision",
+                )
+            except Exception as e:
+                logger.warning("Vision Critic evaluation failed or timed out (%s), falling back to structural evaluation", e)
+
+        # 3. Build structured sensory telemetry prompt (Structural Fallback)
         telemetry_summary = (
             f"Physical Sensor Telemetry:\n"
             f"- Part Count: {metrics.get('object_count')} parts ({', '.join(parts[:8])})\n"
@@ -104,7 +167,7 @@ class HarshCritic:
             "Provide your strict scorecard evaluation now:"
         )
 
-        # 3. LLM Reasoning or Fallback Evaluation
+        # 4. LLM Structural Reasoning
         if self.gateway:
             try:
                 response = self.gateway.generate(
@@ -144,12 +207,36 @@ class HarshCritic:
             except Exception as e:
                 logger.warning("Critic LLM evaluation failed or timed out (%s), using programmatic rubric", e)
 
-        # 4. Deterministic Programmatic Fallback Rubric
-        s_int = 20 if non_manifold == 0 else max(5, 20 - int(non_manifold / 10))
-        f_spec = min(25, max(10, len(parts) * 5))
-        m_sep = min(25, max(5, len(mats) * 8))
-        vol = bbox.get("volume", 0.0)
-        p_real = 20 if (vol > 0.01 and bbox.get("dz", 0) > 0.05) else 10
+        # 5. Deterministic Programmatic Fallback Rubric
+        # Detect whether object names are descriptive semantic components or unassigned primitives (e.g. Cone, Cylinder, Sphere)
+        primitive_keywords = {"cube", "cylinder", "sphere", "cone", "torus", "empty", "plane", "circle"}
+        generic_count = sum(1 for p in parts if any(p.lower().startswith(kw) for kw in primitive_keywords))
+        is_generic_primitives = len(parts) > 0 and (generic_count >= max(2, len(parts) - 1))
+
+        if is_generic_primitives:
+            # Harsh penalty for lazy unarticulated primitives: cannot pass purely on counts
+            s_int = 12 if non_manifold == 0 else 6
+            f_spec = min(12, max(6, len(parts) * 2))
+            m_sep = min(18, max(5, len(mats) * 5))
+            p_real = 10
+            critique_msg = f"Model is an unarticulated cluster of {generic_count} generic primitives ({', '.join(parts[:4])}). Missing semantic assembly."
+            advice_msg = "Articulate components with descriptive hierarchy and assemble sub-parts directly onto parent coordinates."
+            anti_tag = "GENERIC_PRIMITIVE_CLUSTER"
+        else:
+            s_int = 20 if non_manifold == 0 else max(5, 20 - int(non_manifold / 10))
+            f_spec = min(25, max(10, len(parts) * 5))
+            m_sep = min(25, max(5, len(mats) * 8))
+            vol = bbox.get("volume", 0.0)
+            p_real = 20 if (vol > 0.01 and bbox.get("dz", 0) > 0.05) else 10
+            # Spatial spread check: if tripod/stand is present, verify non-clumped base spread
+            dz = bbox.get("dz", 1.0)
+            ground_spread = bbox.get("ground_spread", 0.0)
+            if any(term in " ".join(parts).lower() for term in ["tripod", "base", "stand", "leg"]):
+                if ground_spread > 0 and ground_spread < 0.25 * dz:
+                    p_real = max(8, p_real - 8)
+            critique_msg = f"Model assembled with {len(parts)} parts and {len(mats)} material(s). Bounding volume: {vol:.4f}."
+            advice_msg = "Separate object hierarchies and apply contrasting Principled BSDF materials."
+            anti_tag = "SUB_OPTIMAL_PART_SEPARATION"
 
         total_score = (s_int + f_spec + m_sep + p_real) / 100.0
         passed = total_score >= self.passing_threshold
@@ -161,9 +248,9 @@ class HarshCritic:
             feature_specificity=f_spec,
             material_separation=m_sep,
             proportion_realism=p_real,
-            critique=f"Model assembled with {len(parts)} parts and {len(mats)} material(s). Bounding volume: {vol:.4f}.",
-            remediation_advice="Separate object hierarchies and apply contrasting Principled BSDF materials.",
-            anti_pattern_signature="SUB_OPTIMAL_PART_SEPARATION" if not passed else None,
+            critique=critique_msg,
+            remediation_advice=advice_msg,
+            anti_pattern_signature=anti_tag if not passed else None,
             evaluation_mode="structural_fallback",
         )
 

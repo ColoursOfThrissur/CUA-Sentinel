@@ -175,6 +175,22 @@ register_desktop_organs(tool_registry, ledger=side_effects)
 skill_bank = SkillBank(db, config.storage.skills_dir, tool_registry=tool_registry)
 skill_bank.register_distilled_skills_into_broker(tool_registry)
 
+# Empirical Sensor Rig and Vision-Aware Harsh Critic
+blender_sensor_rig = BlenderSensorRig()
+harsh_critic = HarshCritic(
+    llm_gateway=LLMGateway(endpoint=config.llm.endpoint, default_model=config.llm.model),
+    passing_threshold=0.82,
+)
+
+# Register Self-Upgrade, Sensory Perception & Skill Composition Organs
+from sentinel_broker.organs.self_upgrade import register_self_upgrade_organs
+register_self_upgrade_organs(
+    tool_registry,
+    sensor_rig=blender_sensor_rig,
+    harsh_critic=harsh_critic,
+    skill_bank=skill_bank,
+)
+
 # Agent Registry & Standard Gate A Agents
 agent_registry = AgentRegistry(db)
 
@@ -290,6 +306,7 @@ class ConfigUpdateRequest(BaseModel):
 
 class TaskDispatchRequest(BaseModel):
     goal: str
+    domain: str | None = None
     launch_gui: bool = False
     max_attempts: int | None = None
     model: str | None = None
@@ -1177,25 +1194,31 @@ def execute_domain_step(
     def verifier(output: dict) -> VerificationResult:
         p = Path(output.get("artifact_path", ""))
         if domain == "3d":
-            v_res = verification_gate.verify_obj_geometry(p, min_vertices=10, min_faces=5)
+            v_res = verification_gate.verify_obj_geometry(p, min_vertices=20, min_faces=10)
             if not v_res.passed:
                 return v_res
-            # Anti-Dummy safeguard: Ensure model is not merely the unspecialized abstract cylinder+cube+sphere fallback
+            # Deep empirical evaluation via sensor rig & vision critic
             try:
-                if p.exists():
-                    with open(p, "r", encoding="utf-8", errors="ignore") as f:
-                        obj_names = [line.strip()[2:].strip() for line in f if line.startswith("o ")]
-                    is_dummy = set(obj_names) == {"Cylinder", "Cube", "Sphere"} or obj_names == ["Cylinder", "Cube", "Sphere"]
-                    if is_dummy and not all(w in lower_goal for w in ["cylinder", "cube", "sphere"]):
-                        return VerificationResult(
-                            passed=False,
-                            error_category="GENERIC_DUMMY_FALLBACK_DETECTED",
-                            error_signature="AbstractDummyFallbackMesh",
-                            details={"objects": obj_names},
-                            lesson="The generated 3D model consists only of the unspecialized fallback primitives (cylinder, cube, sphere). You must synthesize specialized geometry with proper components and materials matching the goal.",
-                        )
-            except Exception:
-                pass
+                insp = blender_sensor_rig.inspect_model(p)
+                if insp.is_degenerate:
+                    return VerificationResult(
+                        passed=False,
+                        error_category="DEGENERATE_3D_GEOMETRY",
+                        error_signature=f"DegenerateGeometry: {insp.degenerate_reason}",
+                        details={"inspection": insp.metrics},
+                        lesson=f"The 3D model failed physical topology inspection: {insp.degenerate_reason}. Build a multi-part assembly with articulated components.",
+                    )
+                card = harsh_critic.evaluate_3d_model(goal, insp)
+                if not card.passed:
+                    return VerificationResult(
+                        passed=False,
+                        error_category="CRITIC_REJECTED",
+                        error_signature=card.anti_pattern_signature or "SubStandard3DModel",
+                        details={"score": card.score, "mode": card.evaluation_mode, "critique": card.critique},
+                        lesson=f"Empirical Critic scored model {card.score * 100:.1f}% (threshold: {harsh_critic.passing_threshold * 100:.0f}%). {card.critique} Remediation: {card.remediation_advice}",
+                    )
+            except Exception as ex:
+                logger.warning("Harsh Critic validation check error: %s", ex)
             return v_res
         elif domain == "code":
             expected_syms = []
@@ -1209,7 +1232,23 @@ def execute_domain_step(
                 contract_harness=contract_harness,
             )
         elif domain == "data":
-            return verification_gate.verify_csv_structure(p, min_rows=2, min_cols=2)
+            v_res = verification_gate.verify_csv_structure(p, min_rows=2, min_cols=2)
+            if not v_res.passed:
+                return v_res
+            try:
+                csv_insp = CSVSensorRig.inspect_csv(p)
+                card = harsh_critic.evaluate_csv_dataset(goal, csv_insp)
+                if not card.passed:
+                    return VerificationResult(
+                        passed=False,
+                        error_category="DATA_QUALITY_REJECTED",
+                        error_signature=card.anti_pattern_signature or "LowQualityCSV",
+                        details={"score": card.score, "critique": card.critique},
+                        lesson=f"Dataset quality scored {card.score * 100:.1f}%. {card.critique} Remediation: {card.remediation_advice}",
+                    )
+            except Exception as ex:
+                logger.warning("Data Critic validation error: %s", ex)
+            return v_res
         else:
             return verification_gate.verify_markdown_report(p, min_words=25)
 
@@ -1262,16 +1301,12 @@ def execute_domain_step(
         "gui_launch": gui_info,
         "distilled_skill": result.distilled_skill,
         "mistakes_encountered": result.mistakes_encountered,
+        "synthesized_code": result.synthesized_code,
     }
 
 
 # --- Sentinel Autonomous Gymnasium Setup (Closed-Loop Empirical Self-Evolution) ---
 
-blender_sensor_rig = BlenderSensorRig()
-harsh_critic = HarshCritic(
-    llm_gateway=LLMGateway(endpoint=config.llm.endpoint, default_model=config.llm.model),
-    passing_threshold=0.82,
-)
 curriculum_gen = CurriculumGenerator(
     skill_bank=skill_bank,
     mistake_memory=mistake_memory,
@@ -1345,12 +1380,12 @@ def dispatch_task(req: TaskDispatchRequest):
     lower_goal = goal.lower()
 
     effective_agent = req.agent_id
-    domain = None
+    domain = req.domain
     manifest = agent_registry.get_manifest(effective_agent) if effective_agent and effective_agent != "auto" else None
     if not manifest:
         effective_agent = None
 
-    if manifest and manifest.capabilities:
+    if not domain and manifest and manifest.capabilities:
         cap = manifest.capabilities[0]
         if "3d" in cap:
             domain = "3d"
@@ -1361,21 +1396,27 @@ def dispatch_task(req: TaskDispatchRequest):
         elif "report" in cap or "analysis" in cap:
             domain = "report"
 
-    # Infer domain from goal keywords if not set or if prompt strongly dictates domain
-    is_3d_goal = any(w in lower_goal for w in [
-        "3d", "blender", "model", "sword", "mug", "spaceship", "tree", "chair", "monkey", "mesh",
-        "build", "turret", "gatling", "cylinder", "cube", "sphere", "torus", "geometry", "sculpture",
-        "gun", "barrel", "mount", "bracket", "pillar", "shaft", "car", "robot", "cannon", "shield",
-        "armor", "helmet", "ring", "table", "lamp", "building", "castle", "plane", "rifle", "dagger",
-        "warhammer"
-    ])
-    if not domain or (is_3d_goal and "blender_run_python" not in (manifest.allowed_organs if manifest else [])):
-        if is_3d_goal:
-            domain = "3d"
-            effective_agent = "blender_artisan"
-        elif any(w in lower_goal for w in ["csv", "table", "dataset", "dataframe", "rows", "columns", "spreadsheet", "sales"]):
+    # Infer domain with word boundaries to avoid substring collision (e.g. 'ring' in 'bearing')
+    if not domain:
+        import re
+        words_3d = [
+            "3d", "blender", "model", "sword", "mug", "spaceship", "tree", "chair", "monkey", "mesh",
+            "build", "turret", "gatling", "cylinder", "cube", "sphere", "torus", "geometry", "sculpture",
+            "gun", "barrel", "mount", "bracket", "pillar", "shaft", "car", "robot", "cannon", "shield",
+            "armor", "helmet", "ring", "table", "lamp", "building", "castle", "plane", "rifle", "dagger",
+            "warhammer", "gear", "gimbal", "nozzle", "telescope", "gripper"
+        ]
+        words_data = ["csv", "table", "dataset", "dataframe", "rows", "columns", "spreadsheet", "sales", "telemetry"]
+        words_code = ["code", "python script", "function", "class", "algorithm", "program", "script", "write code"]
+
+        is_data_goal = any(re.search(rf"\b{re.escape(w)}\b", lower_goal) for w in words_data)
+        is_3d_goal = any(re.search(rf"\b{re.escape(w)}\b", lower_goal) for w in words_3d)
+
+        if is_data_goal and not any(re.search(rf"\b{re.escape(w)}\b", lower_goal) for w in ["3d", "blender", "obj"]):
             domain = "data"
-        elif any(w in lower_goal for w in ["code", "python script", "function", "class", "algorithm", "program", "script", "write code"]):
+        elif is_3d_goal:
+            domain = "3d"
+        elif any(re.search(rf"\b{re.escape(w)}\b", lower_goal) for w in words_code):
             domain = "code"
         else:
             domain = "report"

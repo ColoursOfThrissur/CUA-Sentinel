@@ -113,9 +113,13 @@ class PreFlightLinter:
 
         # 3b. Guard bpy.ops.object.mode_set so it doesn't crash if context has no active object
         if "bpy.ops.object.mode_set" in modified_code:
+            def _mode_repl(m):
+                indent = m.group(1)
+                mode = m.group(2)
+                return f"{indent}if bpy.context.active_object and bpy.context.active_object.mode != {mode}:\n{indent}    bpy.ops.object.mode_set(mode={mode})"
             modified_code = re.sub(
-                r"^\s*bpy\.ops\.object\.mode_set\s*\(\s*mode\s*=\s*(['\"][A-Z]+['\"])\s*\)\s*$",
-                r"if bpy.context.active_object and bpy.context.active_object.mode != \1:\n    bpy.ops.object.mode_set(mode=\1)",
+                r"^(\s*)bpy\.ops\.object\.mode_set\s*\(\s*mode\s*=\s*(['\"][A-Z]+['\"])\s*\)\s*$",
+                _mode_repl,
                 modified_code,
                 flags=re.MULTILINE,
             )
@@ -123,9 +127,13 @@ class PreFlightLinter:
 
         # 3c. Guard bpy.ops.object.modifier_apply
         if "bpy.ops.object.modifier_apply" in modified_code:
+            def _mod_repl(m):
+                indent = m.group(1)
+                mod_name = m.group(2)
+                return f"{indent}if bpy.context.active_object and {mod_name} in bpy.context.active_object.modifiers:\n{indent}    bpy.ops.object.modifier_apply(modifier={mod_name})"
             modified_code = re.sub(
-                r"^\s*bpy\.ops\.object\.modifier_apply\s*\(\s*modifier\s*=\s*(['\"][^'\"]+['\"])\s*\)\s*$",
-                r"if bpy.context.active_object and \1 in bpy.context.active_object.modifiers:\n    bpy.ops.object.modifier_apply(modifier=\1)",
+                r"^(\s*)bpy\.ops\.object\.modifier_apply\s*\(\s*modifier\s*=\s*(['\"][^'\"]+['\"])\s*\)\s*$",
+                _mod_repl,
                 modified_code,
                 flags=re.MULTILINE,
             )
@@ -172,6 +180,13 @@ class PreFlightLinter:
                 modified_code,
             )
             applied.append("Removed redundant 'del' after popitem() to prevent KeyError")
+
+        # 3. Pattern fix: Pandas 2.2+ deprecated date offset alias 'T' -> 'min'
+        if "freq=" in modified_code:
+            old_code = modified_code
+            modified_code = re.sub(r"freq\s*=\s*['\"]T['\"]", "freq='min'", modified_code)
+            if modified_code != old_code:
+                applied.append("Sanitized deprecated Pandas frequency alias 'T' to 'min'")
 
         return PreFlightResult(
             code=modified_code,
