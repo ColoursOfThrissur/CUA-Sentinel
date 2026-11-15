@@ -30,6 +30,7 @@ export function App() {
   const [pendingApprovals, setPendingApprovals] = useState([]);
   const [isDispatching, setIsDispatching] = useState(false);
   const [isExecutingReAct, setIsExecutingReAct] = useState(false);
+  const [liveBlueprintStage, setLiveBlueprintStage] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
 
   // Initial Load
@@ -88,6 +89,8 @@ export function App() {
         }
       } else if (event.type === 'task_state') {
         api.getTasks().then((t) => setTasks(t)).catch(() => {});
+      } else if (event.type === 'blueprint_stage') {
+        setLiveBlueprintStage(event.data);
       }
     });
 
@@ -363,6 +366,7 @@ export function App() {
           <${CommandDeck}
             reactTrajectory=${reactTrajectory}
             activeTasks=${tasks}
+            liveBlueprintStage=${liveBlueprintStage}
             onCancelTask=${handleCancelTask}
             onOpenViewport=${setActiveViewportArtifact}
             isExecutingReAct=${isExecutingReAct}
@@ -401,6 +405,7 @@ export function App() {
 
         ${activeTab === 'gym' && html`
           <${GymConsole}
+            liveBlueprintStage=${liveBlueprintStage}
             onOpenViewport=${setActiveViewportArtifact}
           />
         `}

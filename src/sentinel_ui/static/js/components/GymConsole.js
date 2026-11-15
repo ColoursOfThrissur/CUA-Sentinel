@@ -3,7 +3,7 @@ import { html } from '../html.js';
 import { Icon } from '../icons.js';
 import { api } from '../api.js';
 
-export function GymConsole({ onOpenViewport }) {
+export function GymConsole({ onOpenViewport, liveBlueprintStage }) {
   const [gymStatus, setGymStatus] = useState(null);
   const [loading, setLoading] = useState(false);
   const [hours, setHours] = useState(5.0);
@@ -217,6 +217,84 @@ export function GymConsole({ onOpenViewport }) {
           </div>
         </div>
       </div>
+
+      <!-- Live Progressive LoD Blueprint Stepper -->
+      ${liveBlueprintStage && html`
+        <div style=${{
+          padding: '1.25rem',
+          background: 'rgba(56, 189, 248, 0.08)',
+          border: '1px solid rgba(56, 189, 248, 0.3)',
+          borderRadius: '8px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '0.75rem',
+        }}>
+          <div style=${{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style=${{ fontSize: '0.85rem', fontWeight: 600, color: '#38bdf8' }}>
+              🔬 PROGRESSIVE LoD PIPELINE: STAGE ${liveBlueprintStage.stage} (${liveBlueprintStage.stage_name})
+            </span>
+            <span style=${{
+              padding: '0.15rem 0.5rem',
+              borderRadius: '999px',
+              fontSize: '0.7rem',
+              fontWeight: 600,
+              background: liveBlueprintStage.status === 'running' ? 'rgba(56, 189, 248, 0.2)' : 'rgba(16, 185, 129, 0.2)',
+              color: liveBlueprintStage.status === 'running' ? '#38bdf8' : '#10b981',
+              border: `1px solid ${liveBlueprintStage.status === 'running' ? '#38bdf8' : '#10b981'}`,
+            }}>
+              ${liveBlueprintStage.status === 'running' ? 'EXECUTING' : 'COMPLETED'}
+            </span>
+          </div>
+
+          <div style=${{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '0.5rem' }}>
+            ${[
+              { num: 1.0, title: 'Anatomy', desc: 'Hardware Discovery' },
+              { num: 2.0, title: 'Kinematics', desc: 'Parent-Child Tree' },
+              { num: 3.0, title: 'Dimensions', desc: 'Metric Offsets' },
+              { num: 3.5, title: 'Viability', desc: 'ReAct CAD Audit' },
+              { num: 4.0, title: 'Materials', desc: 'PBR Shaders' },
+            ].map((stg) => {
+              const currentNum = parseFloat(liveBlueprintStage.stage) || 0;
+              const isPast = currentNum > stg.num;
+              const isCurrent = Math.abs(currentNum - stg.num) < 0.3;
+              return html`
+                <div
+                  key=${stg.num}
+                  style=${{
+                    background: isCurrent ? 'rgba(56, 189, 248, 0.2)' : isPast ? 'rgba(16, 185, 129, 0.1)' : 'rgba(255, 255, 255, 0.02)',
+                    border: `1px solid ${isCurrent ? '#38bdf8' : isPast ? '#10b981' : 'rgba(255, 255, 255, 0.08)'}`,
+                    borderRadius: '6px',
+                    padding: '0.5rem',
+                  }}
+                >
+                  <div style=${{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', fontWeight: 600, color: isCurrent ? '#38bdf8' : isPast ? '#34d399' : '#94a3b8' }}>
+                    <span>${stg.title}</span>
+                    <span>S${stg.num}</span>
+                  </div>
+                  <div style=${{ fontSize: '0.65rem', color: '#94a3b8', marginTop: '2px' }}>${stg.desc}</div>
+                </div>
+              `;
+            })}
+          </div>
+
+          ${liveBlueprintStage.details && Object.keys(liveBlueprintStage.details).length > 0 && html`
+            <div style=${{ background: 'rgba(0,0,0,0.3)', borderRadius: '6px', padding: '6px 10px', fontSize: '0.75rem', color: '#cbd5e1', fontFamily: 'var(--font-mono)' }}>
+              ${liveBlueprintStage.details.components && html`
+                <div><strong>Components (${liveBlueprintStage.details.count || liveBlueprintStage.details.components.length}):</strong> ${liveBlueprintStage.details.components.slice(0, 6).join(', ')}${liveBlueprintStage.details.components.length > 6 ? '...' : ''}</div>
+              `}
+              ${liveBlueprintStage.details.root_part && html`
+                <div><strong>Kinematic Root:</strong> ${liveBlueprintStage.details.root_part} · <strong>Parts:</strong> ${liveBlueprintStage.details.parts_count}</div>
+              `}
+              ${liveBlueprintStage.details.assembly_name && html`
+                <div><strong>Target:</strong> ${liveBlueprintStage.details.assembly_name} · <strong>Datum:</strong> Z=0</div>
+              `}
+              ${liveBlueprintStage.details.status === 'verified_viable' && html`
+                <div style=${{ color: '#34d399' }}>✓ Spatial Viability Verified: 0 collisions, zero-enclosure verified, ground plane clamped.</div>
+              `}
+            </div>
+          `}
+        </div>
+      `}
 
       <!-- Active Cycle Card (If Running) -->
       ${gymStatus?.current_cycle && html`

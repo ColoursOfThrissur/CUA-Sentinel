@@ -114,7 +114,7 @@ class HarshCritic:
                     "- component_alignment (0-25): Are components properly attached, seated, and aligned without floating?\n"
                     "- material_contrast (0-25): Are distinct materials visibly applied across parts (e.g. polished steel vs dark rubber gasket vs gunmetal bolts, golden brass vs black hub vs steel claws, or copper orange vs titanium blue)? Award 20-25 if distinct materials are present.\n"
                     "- functional_proportion (0-25): Are proportions, aspect ratios, and sizing mechanically realistic?\n\n"
-                    "Output strictly in a ```json code block:\n"
+                    f"Output strictly in a ```json code block (be concise, do not write lengthy essays):\n"
                     "```json\n"
                     '{"visual_resemblance": 20, "component_alignment": 20, "material_contrast": 20, "functional_proportion": 20, '
                     '"critique": "<two sentences>", "remediation_advice": "<one specific instruction>", "anti_pattern": null}\n'
@@ -123,7 +123,7 @@ class HarshCritic:
                 vis_resp = self.gateway.generate(
                     prompt=vision_prompt,
                     model=self.vision_model,
-                    system="You are a senior CAD quality inspector. Evaluate this engineering triptych strictly and output JSON immediately.",
+                    system="You are a senior CAD quality inspector. Be concise in analysis and immediately output the JSON scorecard.",
                     temperature=0.1,
                     max_tokens=4096,
                     images=images_to_send,

@@ -321,7 +321,7 @@ export function ObservabilityView({ telemetry, mistakes, skills, tools }) {
             <div className="spatial-grid-2col">
               <div className="card-glass" style=${{ padding: '16px', background: 'rgba(255, 255, 255, 0.02)' }}>
                 <div style=${{ fontSize: '12px', color: '#94a3b8', marginBottom: '8px', fontWeight: 600 }}>
-                  SQLite Core Database (`sentinel_core.db`)
+                  SQLite Core Database (sentinel_core.db)
                 </div>
                 <div style=${{ fontSize: '26px', fontWeight: 700, color: '#38bdf8', marginBottom: '12px' }}>
                   ${storageStats ? `${storageStats.database_size_mb} MB` : 'Loading...'}

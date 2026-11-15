@@ -31,6 +31,8 @@ export function ViewportModal({ artifactName, onClose }) {
   const [workspacePath, setWorkspacePath] = useState('');
   const [imageDims, setImageDims] = useState({ width: 0, height: 0 });
   const [imageZoom, setImageZoom] = useState(1);
+  const [isExploded, setIsExploded] = useState(false);
+  const [explodeFactor, setExplodeFactor] = useState(1.0);
 
   const canvasRef = useRef(null);
   const threeCleanupRef = useRef(null);
@@ -243,6 +245,22 @@ export function ViewportModal({ artifactName, onClose }) {
         obj.position.y -= center.y * scale;
         obj.position.z -= center.z * scale;
 
+        // Record per-child original local position and radial explode vector for Exploded View
+        obj.traverse((child) => {
+          if (child.isMesh) {
+            child.userData.origPos = child.position.clone();
+            const childBox = new THREE.Box3().setFromObject(child);
+            const childCenter = childBox.getCenter(new THREE.Vector3());
+            const dir = childCenter.clone().sub(center);
+            if (dir.lengthSq() < 0.0001) {
+              dir.set(0, 1, 0);
+            } else {
+              dir.normalize();
+            }
+            child.userData.explodeDir = dir;
+          }
+        });
+
         scene.add(obj);
 
         setMeshStats({
@@ -331,6 +349,21 @@ export function ViewportModal({ artifactName, onClose }) {
       controlsRef.current.target.set(0, 0, 0);
       controlsRef.current.update();
     }
+  };
+
+  const applyExplode = (factor) => {
+    if (!meshRef.current) return;
+    meshRef.current.traverse((child) => {
+      if (child.isMesh && child.userData.origPos && child.userData.explodeDir) {
+        child.position.copy(child.userData.origPos).addScaledVector(child.userData.explodeDir, factor * 0.75);
+      }
+    });
+  };
+
+  const toggleExplode = () => {
+    const next = !isExploded;
+    setIsExploded(next);
+    applyExplode(next ? explodeFactor : 0.0);
   };
 
   // ── Material & Modifier Panel helpers ─────────────────────────────────────
@@ -830,6 +863,38 @@ export function ViewportModal({ artifactName, onClose }) {
                   <button onClick=${resetCamera} title="Reset camera position">
                     Reset View
                   </button>
+                  <button
+                    className=${isExploded ? 'active' : ''}
+                    onClick=${toggleExplode}
+                    title="Toggle Exploded Assembly View"
+                    style=${{
+                      background: isExploded ? 'rgba(56, 189, 248, 0.25)' : '',
+                      borderColor: isExploded ? '#38bdf8' : '',
+                      color: isExploded ? '#38bdf8' : '',
+                    }}
+                  >
+                    💥 ${isExploded ? 'Collapse View' : 'Exploded View'}
+                  </button>
+
+                  ${isExploded && html`
+                    <div style=${{ display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(0,0,0,0.5)', padding: '2px 8px', borderRadius: '4px', border: '1px solid rgba(56, 189, 248, 0.3)' }}>
+                      <span style=${{ fontSize: '11px', color: '#94a3b8' }}>Offset:</span>
+                      <input
+                        type="range"
+                        min="0.2"
+                        max="2.5"
+                        step="0.1"
+                        value=${explodeFactor}
+                        onInput=${(e) => {
+                          const val = parseFloat(e.target.value);
+                          setExplodeFactor(val);
+                          applyExplode(val);
+                        }}
+                        style=${{ width: '70px', height: '4px', cursor: 'pointer', accentColor: '#38bdf8' }}
+                      />
+                      <span style=${{ fontSize: '10px', color: '#38bdf8', minWidth: '24px', fontFamily: 'var(--font-mono)' }}>${explodeFactor.toFixed(1)}x</span>
+                    </div>
+                  `}
                   <button
                     className=${showMatPanel ? 'active' : ''}
                     onClick=${toggleMatPanel}

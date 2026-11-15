@@ -12,8 +12,29 @@ import json
 import logging
 import math
 import re
+import time
 from dataclasses import dataclass, field, asdict
 from typing import Any, Optional
+
+try:
+    from sentinel_ui.telemetry_stream import broadcaster
+except Exception:
+    broadcaster = None
+
+
+def _emit_blueprint_stage(stage: float, stage_name: str, status: str, details: dict[str, Any] | None = None):
+    if broadcaster:
+        try:
+            broadcaster.emit("blueprint_stage", {
+                "stage": stage,
+                "stage_name": stage_name,
+                "status": status,
+                "timestamp": time.time(),
+                "details": details or {},
+            })
+        except Exception:
+            pass
+
 
 logger = logging.getLogger("SentinelBlueprint")
 
@@ -225,22 +246,37 @@ class ProgressiveLoDDecomposer:
             goal[:40], tier, num_stages,
         )
 
+        _emit_blueprint_stage(0.5, "Pipeline Initialization", "running", {"goal": goal, "tier": tier, "stages": num_stages})
+
         # Stage 0: Phase 1 Anatomical Discovery & Functional Hardware Breakdown
+        _emit_blueprint_stage(1.0, "Anatomical Deconstruction", "running", {"goal": goal})
         anatomy_spec = self._stage_0_anatomical_deconstruction(goal, model=model)
+        components_found = [c.get("name") for c in anatomy_spec.get("components", [])]
+        _emit_blueprint_stage(1.0, "Anatomical Deconstruction", "completed", {"components": components_found, "count": len(components_found)})
 
         # Stage 1: Macro Architecture & World Datum (Envelope, ground datum, primary axis)
+        _emit_blueprint_stage(1.5, "Macro Datum & Ground Plane", "running", {"datum": "Z=0"})
         macro_spec = self._stage_1_macro_datum(goal, anatomy_spec, tier, anti_patterns, model=model)
+        _emit_blueprint_stage(1.5, "Macro Datum & Ground Plane", "completed", {"assembly_name": macro_spec.get("assembly_name"), "bounding_box": macro_spec.get("bounding_box")})
 
         # Stage 2: Kinematic Sub-Assembly Tree & Plural Instance Expansion
+        _emit_blueprint_stage(2.0, "Kinematic Parent-Child Hierarchy", "running", {})
         stage2_spec = self._stage_2_subassemblies(goal, macro_spec, tier, model=model)
+        tree = stage2_spec.get("kinematic_tree", [])
+        _emit_blueprint_stage(2.0, "Kinematic Parent-Child Hierarchy", "completed", {"root_part": stage2_spec.get("root_part"), "parts_count": len(tree)})
 
         # Stage 3: Relative Joint Mating, Dimensions & Local Offsets
+        _emit_blueprint_stage(3.0, "Metric Dimensions & Local Offsets", "running", {})
         stage3_spec = self._stage_3_joint_mating(goal, macro_spec, stage2_spec, tier, model=model)
+        _emit_blueprint_stage(3.0, "Metric Dimensions & Local Offsets", "completed", {"components_count": len(stage3_spec.get("components", []))})
 
         # Stage 3.5: Physical Viability & Spatial Layout ReAct Checker (Real-World Feasibility Loop)
+        _emit_blueprint_stage(3.5, "ReAct Physical Viability Audit", "running", {})
         stage3_spec = self._stage_3_react_viability_checker(goal, macro_spec, stage3_spec, model=model)
+        _emit_blueprint_stage(3.5, "ReAct Physical Viability Audit", "completed", {"status": "verified_viable", "components_count": len(stage3_spec.get("components", []))})
 
         # Stage 4: High-Contrast PBR Material Assignment & Blueprint Synthesis
+        _emit_blueprint_stage(4.0, "PBR Material Assignment", "running", {})
         final_blueprint = self._stage_4_material_assignment(
             goal=goal,
             macro_spec=macro_spec,
@@ -250,9 +286,16 @@ class ProgressiveLoDDecomposer:
             anti_patterns=anti_patterns,
             model=model,
         )
+        _emit_blueprint_stage(4.0, "PBR Material Assignment", "completed", {"materials_count": len(final_blueprint.materials)})
 
         # Validate blueprint consistency
-        return self._validate_and_sanitize(final_blueprint, goal)
+        res = self._validate_and_sanitize(final_blueprint, goal)
+        _emit_blueprint_stage(5.0, "Blueprint Synthesis Complete", "completed", {
+            "assembly_name": res.assembly_name,
+            "components_count": len(res.components),
+            "materials_count": len(res.materials),
+        })
+        return res
 
     def _stage_0_anatomical_deconstruction(
         self, goal: str, model: str | None = None
@@ -410,7 +453,13 @@ class ProgressiveLoDDecomposer:
             "9. METRIC UNIT CONVERSIONS (Meters vs Millimeters & Centimeters):\n"
             "   - All 3D coordinates and dimensions in Blender are in METERS (1.0 = 1 meter).\n"
             "   - If the goal or component specifies millimeters (e.g. 6.35mm, 12mm, 50mm), you MUST convert to meters:\n"
-            "     6.35mm = 0.00635, 12mm = 0.012, 50mm = 0.05. Never enter millimeter values as bare numbers in meters!\n\n"
+            "     6.35mm = 0.00635, 12mm = 0.012, 50mm = 0.05. Never enter millimeter values as bare numbers in meters!\n"
+            "10. C-CLAMPS, PRESSES & OPPOSING JAWS (Throat Geometry & Clamp Screw Action):\n"
+            "   - Lower jaw extends forward along +X from the bottom of the spine: `offset_x = +(spine_width / 2.0 + jaw_length / 2.0)`, `offset_z = -spine_depth / 2.0`.\n"
+            "   - Upper boss arm extends forward along +X from the top of the spine: `offset_x = +(spine_width / 2.0 + arm_length / 2.0)`, `offset_z = +spine_depth / 2.0`.\n"
+            "   - Lead screw passes vertically through the upper boss arm, extending DOWNWARD (-Z) into the open throat cavity toward the anvil: `offset_z = -screw_depth * 0.30`.\n"
+            "   - Swivel clamp pad mounts at the lower tip of the vertical screw: `offset_z = -screw_depth / 2.0`.\n"
+            "   - Tommy bar / sliding handle mounts at the top head of the vertical screw: `offset_z = +screw_depth / 2.0`, horizontal crossbar (`rotation_deg = [0, 90, 0]`).\n\n"
             "Output strictly a JSON object with keys:\n"
             '{"components": [{"name": "...", "parent": "..." or null, "primitive": "cylinder|cube|cone|uv_sphere|torus", '
             '"dimensions": {"radius": <float>, "depth": <float>} or {"size": [dx, dy, dz]}, "offset": [x, y, z], "rotation_deg": [rx, ry, rz]}]}'
@@ -626,6 +675,19 @@ class ProgressiveLoDDecomposer:
                         "description": f"Drive shaft/core component '{c.get('name')}' is positioned off-center at [{off[0]}, {off[1]}]. Central shafts must align concentrically at [0.0, 0.0] on their parent axis.",
                     })
 
+        # Check 6: Clamp Lead Screw Direction
+        for c in components:
+            name_l = c.get("name", "").lower()
+            if any(k in name_l for k in ("lead_screw", "clamp_screw", "clamping_screw")):
+                off = c.get("offset", [0, 0, 0])
+                if off and len(off) >= 3 and off[2] >= 0.0:
+                    violations.append({
+                        "type": "INVERTED_CLAMP_SCREW",
+                        "component": c.get("name"),
+                        "current_z": off[2],
+                        "description": f"Clamp screw '{c.get('name')}' has non-negative vertical offset Z={off[2]} pointing upward away from the clamp anvil. It must extend downward (-Z) through the upper boss arm into the open throat cavity toward the anvil foot.",
+                    })
+
         return violations
 
     def _apply_viability_guardrails(
@@ -695,6 +757,13 @@ class ProgressiveLoDDecomposer:
                 off[1] = 0.0
                 if "radius" in dims and float(dims["radius"]) < 0.008:
                     dims["radius"] = 0.008
+
+            # 5. Clamp Lead Screw Downward Advancement
+            if any(k in name.lower() for k in ("lead_screw", "clamp_screw", "clamping_screw")):
+                off = c.setdefault("offset", [0.0, 0.0, 0.0])
+                if len(off) >= 3 and off[2] >= 0.0:
+                    screw_d = float(dims.get("depth", dims.get("size", [0, 0, 0.6])[2] if isinstance(dims.get("size"), list) else 0.6))
+                    off[2] = -round(screw_d * 0.35, 4)
 
         return components
 

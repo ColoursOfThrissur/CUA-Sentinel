@@ -586,6 +586,7 @@ def get_telemetry():
     mistakes_count = db.execute_one("SELECT COUNT(*) as count FROM mistake_ledger")
     skills_count = db.execute_one("SELECT COUNT(*) as count FROM skills")
     highest_lease = db.execute_one("SELECT COALESCE(MAX(lease_token), 0) as max_lease FROM attempts")
+    db_file = Path(db.db_path)
 
     return {
         "hardware": {
