@@ -71,7 +71,7 @@ class LLMGateway:
                 "top_p": 0.9,
                 "repeat_penalty": use_repeat_penalty,
                 "repeat_last_n": 64,
-                "num_predict": 4096 if images else use_tokens,
+                "num_predict": use_tokens,
                 "num_ctx": 16384 if images else 8192,
             },
         }
@@ -91,9 +91,14 @@ class LLMGateway:
             with urllib.request.urlopen(req, timeout=self.timeout_sec) as resp:
                 res_json = json.loads(resp.read().decode("utf-8"))
                 resp_text = res_json.get("response", "").strip()
-                # If response was starved by reasoning token budget, fall back to thinking
                 if not resp_text and res_json.get("thinking"):
-                    logger.warning("LLM response field empty; extracting content from thinking field")
+                    logger.warning(
+                        "LLM response empty; done_reason=%s, eval_count=%s, thinking_len=%d, thinking_sample=%r",
+                        res_json.get("done_reason"),
+                        res_json.get("eval_count"),
+                        len(res_json.get("thinking", "")),
+                        res_json.get("thinking", "")[-300:],
+                    )
                     raw_thinking = res_json.get("thinking", "").strip()
                     # Check if thinking ends with or contains a JSON block
                     json_match = re.search(r"(```json\s*\{.*?\}\s*```|\{[^{}]*\"visual_resemblance\"[^{}]*\})", raw_thinking, re.DOTALL)

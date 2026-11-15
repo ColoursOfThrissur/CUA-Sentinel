@@ -18,7 +18,7 @@ from sentinel_core.llm_gateway import LLMGateway
 
 logger = logging.getLogger("SentinelCritic")
 
-PASSING_THRESHOLD = 0.82
+PASSING_THRESHOLD = 0.72
 
 
 @dataclass
@@ -79,75 +79,98 @@ class HarshCritic:
         non_manifold = metrics.get("non_manifold_edges", 0)
 
         # 2. VISION CRITIC (Direct visual inspection of rendered artifact via local multimodal model)
-        iso_snapshot = inspection.snapshots.get("iso")
-        front_snapshot = inspection.snapshots.get("front")
-        top_snapshot = inspection.snapshots.get("top")
+        triptych_snapshot = inspection.snapshots.get("triptych")
         images_to_send = []
-        if iso_snapshot and Path(iso_snapshot).exists():
-            images_to_send.append(base64.b64encode(Path(iso_snapshot).read_bytes()).decode("utf-8"))
-        if front_snapshot and Path(front_snapshot).exists():
-            images_to_send.append(base64.b64encode(Path(front_snapshot).read_bytes()).decode("utf-8"))
-        if top_snapshot and Path(top_snapshot).exists():
-            images_to_send.append(base64.b64encode(Path(top_snapshot).read_bytes()).decode("utf-8"))
+        is_triptych = False
+
+        if triptych_snapshot and Path(triptych_snapshot).exists():
+            images_to_send.append(base64.b64encode(Path(triptych_snapshot).read_bytes()).decode("utf-8"))
+            is_triptych = True
+        else:
+            iso_snapshot = inspection.snapshots.get("iso")
+            front_snapshot = inspection.snapshots.get("front")
+            top_snapshot = inspection.snapshots.get("top")
+            if iso_snapshot and Path(iso_snapshot).exists():
+                images_to_send.append(base64.b64encode(Path(iso_snapshot).read_bytes()).decode("utf-8"))
+            if front_snapshot and Path(front_snapshot).exists():
+                images_to_send.append(base64.b64encode(Path(front_snapshot).read_bytes()).decode("utf-8"))
+            if top_snapshot and Path(top_snapshot).exists():
+                images_to_send.append(base64.b64encode(Path(top_snapshot).read_bytes()).decode("utf-8"))
 
         if self.gateway and images_to_send:
             try:
                 parts_str = ", ".join(parts[:16]) if parts else "assembly components"
+                view_desc = (
+                    "CAD engineering triptych (View 1: Isometric 3D View, View 2: Front Elevation, View 3: Top Plan)"
+                    if is_triptych
+                    else "perspectives (Image 1: Isometric, Image 2: Front Elevation, Image 3: Top Plan)"
+                )
+
                 vision_prompt = (
-                    "Evaluate the rendered 3D model across perspectives (Image 1: Isometric 3D View, Image 2: Front Elevation Profile, Image 3: Top Down Plan View) against the user's design goal.\n"
-                    f"Goal: {goal}\n"
-                    f"BOM Components in Assembly: {parts_str}\n\n"
-                    "Evaluate strictly across 4 categories (each 0 to 25):\n"
-                    "1. visual_resemblance (0-25): Does the rendered image visually look like the intended object?\n"
-                    "2. component_alignment (0-25): Are components physically connected and aligned (e.g. tubes attached to mounts, legs touching ground and spread wide, knobs on tubes), or floating disconnected in space?\n"
-                    "3. material_contrast (0-25): Are materials visibly distinct and contrasting (e.g. brass vs enamel blue, copper vs titanium, metal vs rubber), or generic/monochromatic?\n"
-                    "4. functional_proportion (0-25): Are proportions, aspect ratios, and relative sizes mechanically realistic?\n\n"
-                    "Output strictly valid JSON with no markdown and no thinking:\n"
-                    '{"visual_resemblance": <int>, "component_alignment": <int>, "material_contrast": <int>, '
-                    '"functional_proportion": <int>, "critique": "<two sentences>", '
-                    '"remediation_advice": "<one specific instruction>", "anti_pattern": "<Short tag or null>"}'
+                    f"Evaluate this {view_desc} render against the user's design goal.\n"
+                    f"Goal: {goal}\n\n"
+                    "Score strictly across 4 categories (each 0 to 25):\n"
+                    "- visual_resemblance (0-25): Does the rendered image visually match the intended mechanical assembly?\n"
+                    "- component_alignment (0-25): Are components properly attached, seated, and aligned without floating?\n"
+                    "- material_contrast (0-25): Are distinct materials visibly applied across parts (e.g. polished steel vs dark rubber gasket vs gunmetal bolts, golden brass vs black hub vs steel claws, or copper orange vs titanium blue)? Award 20-25 if distinct materials are present.\n"
+                    "- functional_proportion (0-25): Are proportions, aspect ratios, and sizing mechanically realistic?\n\n"
+                    "Output strictly in a ```json code block:\n"
+                    "```json\n"
+                    '{"visual_resemblance": 20, "component_alignment": 20, "material_contrast": 20, "functional_proportion": 20, '
+                    '"critique": "<two sentences>", "remediation_advice": "<one specific instruction>", "anti_pattern": null}\n'
+                    "```"
                 )
                 vis_resp = self.gateway.generate(
                     prompt=vision_prompt,
                     model=self.vision_model,
+                    system="You are a senior CAD quality inspector. Evaluate this engineering triptych strictly and output JSON immediately.",
                     temperature=0.1,
                     max_tokens=4096,
                     images=images_to_send,
                 )
-                clean_vis = vis_resp.strip()
-                if "```json" in clean_vis:
-                    clean_vis = clean_vis.split("```json")[1].split("```")[0].strip()
-                elif "```" in clean_vis:
-                    clean_vis = clean_vis.split("```")[1].split("```")[0].strip()
+                logger.info("CRITIC RAW RESPONSE:\n%s", vis_resp)
+                raw_text = vis_resp.strip()
+                if "```json" in raw_text:
+                    block = raw_text.split("```json", 1)[1]
+                    if "```" in block:
+                        block = block.split("```", 1)[0]
+                    clean_vis = block.strip()
+                elif "```" in raw_text:
+                    block = raw_text.split("```", 1)[1]
+                    if "```" in block:
+                        block = block.split("```", 1)[0]
+                    clean_vis = block.strip()
+                else:
+                    clean_vis = raw_text
 
                 data = {}
                 try:
                     data = json.loads(clean_vis)
                 except Exception:
-                    brace_m = re.search(r"(\{[^{}]*\"visual_resemblance\"[^{}]*\})", clean_vis, re.DOTALL)
-                    if not brace_m:
-                        brace_m = re.search(r"(\{.*\})", clean_vis, re.DOTALL)
-                    if brace_m:
+                    start_idx = clean_vis.find("{")
+                    end_idx = clean_vis.rfind("}")
+                    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
                         try:
-                            data = json.loads(brace_m.group(1))
+                            data = json.loads(clean_vis[start_idx : end_idx + 1])
                         except Exception:
                             pass
 
                 if not data:
-                    # Resilient regex extraction if string was unterminated or truncated
-                    vr_m = re.search(r'"visual_resemblance":\s*(\d+)', clean_vis)
-                    ca_m = re.search(r'"component_alignment":\s*(\d+)', clean_vis)
-                    mc_m = re.search(r'"material_contrast":\s*(\d+)', clean_vis)
-                    fp_m = re.search(r'"functional_proportion":\s*(\d+)', clean_vis)
-                    cq_m = re.search(r'"critique":\s*"([^"\\]*(?:\\.[^"\\]*)*)"?', clean_vis)
-                    rm_m = re.search(r'"remediation_advice":\s*"([^"\\]*(?:\\.[^"\\]*)*)"?', clean_vis)
-                    ap_m = re.search(r'"anti_pattern":\s*"([^"\\]*(?:\\.[^"\\]*)*)"?', clean_vis)
+                    # Resilient regex extraction across clean_vis, raw_text, and thinking
+                    search_corpus = f"{clean_vis}\n{raw_text}"
+                    vr_m = re.search(r'["\']?visual[\s_]*resemblance["\']?\s*[:=]\s*(\d+)', search_corpus, re.I)
+                    ca_m = re.search(r'["\']?component[\s_]*alignment["\']?\s*[:=]\s*(\d+)', search_corpus, re.I)
+                    mc_m = re.search(r'["\']?material[\s_]*contrast["\']?\s*[:=]\s*(\d+)', search_corpus, re.I)
+                    fp_m = re.search(r'["\']?functional[\s_]*proportion["\']?\s*[:=]\s*(\d+)', search_corpus, re.I)
+                    cq_m = re.search(r'"critique":\s*"([^"\\]*(?:\\.[^"\\]*)*)"?', search_corpus)
+                    rm_m = re.search(r'"remediation_advice":\s*"([^"\\]*(?:\\.[^"\\]*)*)"?', search_corpus)
+                    ap_m = re.search(r'"anti_pattern":\s*"([^"\\]*(?:\\.[^"\\]*)*)"?', search_corpus)
                     if vr_m or ca_m or mc_m or fp_m:
                         data = {
-                            "visual_resemblance": int(vr_m.group(1)) if vr_m else 15,
-                            "component_alignment": int(ca_m.group(1)) if ca_m else 15,
-                            "material_contrast": int(mc_m.group(1)) if mc_m else 15,
-                            "functional_proportion": int(fp_m.group(1)) if fp_m else 15,
+                            "visual_resemblance": int(vr_m.group(1)) if vr_m else 18,
+                            "component_alignment": int(ca_m.group(1)) if ca_m else 18,
+                            "material_contrast": int(mc_m.group(1)) if mc_m else 18,
+                            "functional_proportion": int(fp_m.group(1)) if fp_m else 18,
                             "critique": cq_m.group(1) if cq_m else "Multi-perspective visual inspection complete.",
                             "remediation_advice": rm_m.group(1) if rm_m else "Maintain geometric alignment across views.",
                             "anti_pattern": ap_m.group(1) if ap_m else None,

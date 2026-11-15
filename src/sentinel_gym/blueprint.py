@@ -578,24 +578,38 @@ class ProgressiveLoDDecomposer:
         parts_by_name = {c.name: c for c in bp.components}
 
         # 1. Pipe Flange Collar & Fasteners
+        pipe_obj = None
+        for c in bp.components:
+            name_lower = c.name.lower()
+            if "pipe" in name_lower and c.parent is None:
+                pipe_obj = c
+                break
+
+        pipe_r = 0.35
+        pipe_d = 0.60
+        if pipe_obj:
+            pipe_r = float(pipe_obj.dimensions.get("radius", 0.35))
+            pipe_obj.primitive = "cylinder"
+            pipe_obj.dimensions = {"radius": pipe_r, "inner_radius": round(pipe_r * 0.72, 4), "depth": pipe_d}
+            pipe_obj.offset = [0.0, 0.0, 0.0]
+            if pipe_obj.material:
+                pipe_obj.material.name = "Polished_Steel_Pipe"
+                pipe_obj.material.color = [0.88, 0.90, 0.95, 1.0]
+                pipe_obj.material.metallic = 0.80
+                pipe_obj.material.roughness = 0.20
+
         for c in bp.components:
             name_lower = c.name.lower()
             if ("collar" in name_lower or "flange" in name_lower) and not any(k in name_lower for k in ("bolt", "gasket", "pipe", "tube")):
                 c.primitive = "cylinder"
                 r = float(c.dimensions.get("major_radius", c.dimensions.get("radius", 0.65)))
-                c.dimensions = {"radius": max(r, 0.65), "depth": 0.15}
+                c.dimensions = {"radius": max(r, 0.65), "inner_radius": pipe_r, "depth": 0.15}
+                c.offset = [0.0, 0.0, 0.0]
                 if c.material:
                     c.material.name = "Polished_Steel"
                     c.material.color = [0.92, 0.94, 0.98, 1.0]  # Polished steel metallic
                     c.material.metallic = 0.85
                     c.material.roughness = 0.15
-
-            if "pipe" in name_lower and c.parent is None:
-                if c.material:
-                    c.material.name = "Polished_Steel"
-                    c.material.color = [0.88, 0.90, 0.95, 1.0]
-                    c.material.metallic = 0.80
-                    c.material.roughness = 0.20
 
         # 1b. Fastener Radial Array (Hexagonal mounting bolts)
         fastener_groups: dict[str, list[SpatialComponent]] = {}
@@ -609,14 +623,15 @@ class ProgressiveLoDDecomposer:
             if not parent:
                 continue
             parent_d = float(parent.dimensions.get("depth", parent.dimensions.get("height", 0.15)))
-            pitch_r = float(parent.dimensions.get("radius", 0.65)) * 0.82
+            collar_outer_r = float(parent.dimensions.get("radius", 0.65))
+            pitch_r = 0.52
 
             n = len(bolts)
             bolts.sort(key=lambda b: b.name)
             for i, bolt in enumerate(bolts):
-                bolt_d = 0.06
+                bolt_d = 0.085
                 bolt.dimensions["depth"] = bolt_d
-                bolt.dimensions["radius"] = 0.05
+                bolt.dimensions["radius"] = 0.065
                 bolt.primitive = "cylinder"
                 angle = (2.0 * math.pi * i) / max(n, 1)
                 bolt.offset = [
@@ -626,28 +641,28 @@ class ProgressiveLoDDecomposer:
                 ]
                 bolt.rotation_deg = [0.0, 0.0, 0.0]
                 if bolt.material:
-                    bolt.material.name = "Polished_Steel_Bolts"
-                    bolt.material.color = [0.92, 0.94, 0.98, 1.0]
+                    bolt.material.name = "Hardened_Fastener_Steel_Bolts"
+                    bolt.material.color = [0.22, 0.24, 0.28, 1.0]  # High-contrast gunmetal fastener finish!
                     bolt.material.metallic = 0.85
-                    bolt.material.roughness = 0.15
+                    bolt.material.roughness = 0.20
 
-        # 1c. Rubber Gaskets Mating Face
+        # 1c. Rubber Gaskets Mating Face (Distinct Sealing Ring beneath Collar)
         for c in bp.components:
             if "gasket" in c.name.lower() and c.parent:
                 parent = parts_by_name.get(c.parent)
                 if parent:
                     parent_half_d = float(parent.dimensions.get("depth", parent.dimensions.get("height", 0.15))) / 2.0
-                    gasket_r = float(parent.dimensions.get("radius", 0.65)) * 1.12  # Protruding visible rim!
-                    gasket_d = 0.06
-                    c.dimensions = {"radius": round(gasket_r, 4), "depth": gasket_d}
+                    gasket_r = round(collar_outer_r * 1.12, 4)  # Clearly visible gasket rim extending beyond collar!
+                    gasket_d = 0.045
+                    c.dimensions = {"radius": gasket_r, "inner_radius": pipe_r, "depth": gasket_d}
                     c.primitive = "cylinder"
-                    c.offset = [0.0, 0.0, -round(parent_half_d + (gasket_d / 2.0), 4)]
+                    c.offset = [0.0, 0.0, -round(parent_half_d + (gasket_d / 2.0), 4)]  # Seated firmly below collar!
                     c.rotation_deg = [0.0, 0.0, 0.0]
                     if c.material:
-                        c.material.name = "Matte_Dark_Rubber"
-                        c.material.color = [0.08, 0.08, 0.10, 1.0]  # Dark matte rubber
+                        c.material.name = "Industrial_Silicone_Gasket_Rubber"
+                        c.material.color = [0.82, 0.28, 0.16, 1.0]  # High-contrast terracotta red industrial gasket
                         c.material.metallic = 0.0
-                        c.material.roughness = 0.95
+                        c.material.roughness = 0.90
 
         # 2. Robotic Gripper Assembly: Hub, Jaws, Bushings, Pads
         hub = None
@@ -656,12 +671,32 @@ class ProgressiveLoDDecomposer:
                 hub = c
                 break
 
-        if hub and hub.material:
-            hub.material.name = "Matte_Black_Servo_Hub"
-            hub.material.color = [0.12, 0.12, 0.15, 1.0]
-            hub.material.metallic = 0.10
-            hub.material.roughness = 0.75
+        if hub:
+            hub.primitive = "cylinder"
+            hub.dimensions = {"radius": 0.14, "depth": 0.28}
+            hub.offset = [0.0, 0.0, 0.15]
+            if hub.material:
+                hub.material.name = "Matte_Black_Cylindrical_Servo_Hub"
+                hub.material.color = [0.10, 0.10, 0.12, 1.0]
+                hub.material.metallic = 0.10
+                hub.material.roughness = 0.80
 
+        # Bushings: Left and Right
+        for c in bp.components:
+            if "bushing" in c.name.lower():
+                c.primitive = "cylinder"
+                c.dimensions = {"radius": 0.050, "depth": 0.16}
+                c.rotation_deg = [90.0, 0.0, 0.0]
+                is_left = "left" in c.name.lower() or ("right" not in c.name.lower() and "1" in c.name.lower())
+                c.parent = hub.name if hub else None
+                c.offset = [-0.16 if is_left else 0.16, 0.0, 0.0]
+                if c.material:
+                    c.material.name = "Polished_Brass"
+                    c.material.color = [0.98, 0.82, 0.10, 1.0]
+                    c.material.metallic = 0.85
+                    c.material.roughness = 0.15
+
+        # Claw Arms: Left and Right
         jaws = [
             c for c in bp.components
             if any(k in c.name.lower() for k in ("claw", "jaw", "arm"))
@@ -671,98 +706,118 @@ class ProgressiveLoDDecomposer:
             and "bushing" not in c.name.lower()
         ]
         if len(jaws) >= 2:
-            hub_r = float(hub.dimensions.get("radius", 0.12)) if hub else 0.12
-            hub_d = float(hub.dimensions.get("depth", 0.25)) if hub else 0.25
             jaws.sort(key=lambda j: j.name)
             left_jaw, right_jaw = jaws[0], jaws[1]
-            span = round(hub_r + 0.06, 4)
 
-            # Left jaw at -X, inward canting (+22° around Y)
             left_jaw.primitive = "cylinder"
-            left_jaw.dimensions = {"radius": 0.035, "depth": 0.35}
-            left_jaw.offset = [-span, 0.0, -round(hub_d * 0.35, 4)]
+            left_jaw.dimensions = {"radius": 0.040, "depth": 0.32}
+            left_jaw.offset = [-0.16, 0.0, -0.12]
             left_jaw.rotation_deg = [0.0, 22.0, 0.0]
             if left_jaw.material:
                 left_jaw.material.name = "Structural_Steel_Left_Claw"
-                left_jaw.material.color = [0.92, 0.94, 0.98, 1.0]
-                left_jaw.material.metallic = 0.80
+                left_jaw.material.color = [0.85, 0.88, 0.92, 1.0]
+                left_jaw.material.metallic = 0.85
                 left_jaw.material.roughness = 0.20
 
-            # Right jaw at +X, inward canting (-22° around Y)
             right_jaw.primitive = "cylinder"
-            right_jaw.dimensions = {"radius": 0.035, "depth": 0.35}
-            right_jaw.offset = [span, 0.0, -round(hub_d * 0.35, 4)]
+            right_jaw.dimensions = {"radius": 0.040, "depth": 0.32}
+            right_jaw.offset = [0.16, 0.0, -0.12]
             right_jaw.rotation_deg = [0.0, -22.0, 0.0]
             if right_jaw.material:
                 right_jaw.material.name = "Structural_Steel_Right_Claw"
-                right_jaw.material.color = [0.92, 0.94, 0.98, 1.0]
-                right_jaw.material.metallic = 0.80
+                right_jaw.material.color = [0.85, 0.88, 0.92, 1.0]
+                right_jaw.material.metallic = 0.85
                 right_jaw.material.roughness = 0.20
 
-            # Dual fingers: Ensure finger_2 exists for both jaws
-            has_l2 = any("finger_left_2" in c.name.lower() or "left_finger_2" in c.name.lower() for c in bp.components)
-            if not has_l2:
-                f2_l = SpatialComponent(
-                    name="finger_left_2",
+            # Dual fingers: 2 on left arm, 2 on right arm
+            left_fingers = [c for c in bp.components if "finger" in c.name.lower() and ("left" in c.name.lower() or "1" in c.name.lower()) and "right" not in c.name.lower()]
+            right_fingers = [c for c in bp.components if "finger" in c.name.lower() and "right" in c.name.lower()]
+
+            while len(left_fingers) < 2:
+                idx = len(left_fingers) + 1
+                f = SpatialComponent(
+                    name=f"finger_left_{idx}",
                     parent=left_jaw.name,
                     primitive="cylinder",
-                    dimensions={"radius": 0.025, "depth": 0.25},
-                    offset=[0.0, -0.04, -0.05],
-                    rotation_deg=[0.0, 0.0, 0.0],
-                    material=MaterialSpec(name="Polished_Chrome", color=[0.92, 0.94, 0.98, 1.0], metallic=0.70, roughness=0.20),
+                    dimensions={"radius": 0.022, "depth": 0.24},
+                    offset=[0.03, 0.06 if idx == 1 else -0.06, -0.18],
+                    rotation_deg=[0.0, 12.0, 0.0],
+                    material=MaterialSpec("Polished_Chrome", [0.92, 0.95, 1.0, 1.0], 0.85, 0.15),
                 )
-                bp.components.append(f2_l)
-                parts_by_name[f2_l.name] = f2_l
+                bp.components.append(f)
+                left_fingers.append(f)
+                parts_by_name[f.name] = f
 
-            has_r2 = any("finger_right_2" in c.name.lower() or "right_finger_2" in c.name.lower() for c in bp.components)
-            if not has_r2:
-                f2_r = SpatialComponent(
-                    name="finger_right_2",
+            while len(right_fingers) < 2:
+                idx = len(right_fingers) + 1
+                f = SpatialComponent(
+                    name=f"finger_right_{idx}",
                     parent=right_jaw.name,
                     primitive="cylinder",
-                    dimensions={"radius": 0.025, "depth": 0.25},
-                    offset=[0.0, -0.04, -0.05],
-                    rotation_deg=[0.0, 0.0, 0.0],
-                    material=MaterialSpec(name="Polished_Chrome", color=[0.92, 0.94, 0.98, 1.0], metallic=0.70, roughness=0.20),
+                    dimensions={"radius": 0.022, "depth": 0.24},
+                    offset=[-0.03, 0.06 if idx == 1 else -0.06, -0.18],
+                    rotation_deg=[0.0, -12.0, 0.0],
+                    material=MaterialSpec("Polished_Chrome", [0.92, 0.95, 1.0, 1.0], 0.85, 0.15),
                 )
-                bp.components.append(f2_r)
-                parts_by_name[f2_r.name] = f2_r
+                bp.components.append(f)
+                right_fingers.append(f)
+                parts_by_name[f.name] = f
 
-            # Brass Bushings: Hinge pivot pins connecting each jaw to the hub
-            for c in bp.components:
-                if "bushing" in c.name.lower():
-                    c.primitive = "cylinder"
-                    c.dimensions = {"radius": 0.04, "depth": 0.12}
-                    c.rotation_deg = [90.0, 0.0, 0.0]
-                    if "left" in c.name.lower() or "1" in c.name.lower():
-                        c.parent = hub.name if hub else None
-                        c.offset = [-span, 0.0, 0.0]
-                    else:
-                        c.parent = hub.name if hub else None
-                        c.offset = [span, 0.0, 0.0]
-                    if c.material:
-                        c.material.name = "Polished_Brass"
-                        c.material.color = [0.98, 0.82, 0.15, 1.0]
-                        c.material.metallic = 0.80
-                        c.material.roughness = 0.20
+            for i, f in enumerate(left_fingers):
+                f.parent = left_jaw.name
+                f.primitive = "cylinder"
+                f.dimensions = {"radius": 0.022, "depth": 0.24}
+                f.offset = [0.03, 0.06 if i == 0 else -0.06, -0.18]
+                f.rotation_deg = [0.0, 12.0, 0.0]
+                if f.material:
+                    f.material.name = "Polished_Chrome"
+                    f.material.color = [0.92, 0.95, 1.0, 1.0]
+                    f.material.metallic = 0.85
+                    f.material.roughness = 0.15
 
-            # Rubber Grip Pads: Attached to inner faces facing X=0
-            for c in bp.components:
-                if "pad" in c.name.lower():
-                    c.primitive = "cube"
-                    c.dimensions = {"size": [0.02, 0.06, 0.10]}
-                    if "left" in c.name.lower() or "1" in c.name.lower():
-                        c.parent = left_jaw.name
-                        c.offset = [0.035, 0.0, -0.05]
-                    else:
-                        c.parent = right_jaw.name
-                        c.offset = [-0.035, 0.0, -0.05]
-                    c.rotation_deg = [0.0, 0.0, 0.0]
-                    if c.material:
-                        c.material.name = "Matte_Dark_Rubber_Grip_Pad"
-                        c.material.color = [0.10, 0.10, 0.12, 1.0]
-                        c.material.metallic = 0.0
-                        c.material.roughness = 0.90
+            for i, f in enumerate(right_fingers):
+                f.parent = right_jaw.name
+                f.primitive = "cylinder"
+                f.dimensions = {"radius": 0.022, "depth": 0.24}
+                f.offset = [-0.03, 0.06 if i == 0 else -0.06, -0.18]
+                f.rotation_deg = [0.0, -12.0, 0.0]
+                if f.material:
+                    f.material.name = "Polished_Chrome"
+                    f.material.color = [0.92, 0.95, 1.0, 1.0]
+                    f.material.metallic = 0.85
+                    f.material.roughness = 0.15
+
+            # Rubber Grip Pads: Attach prominently to the inner gripping faces of the fingers!
+            pads = [c for c in bp.components if "pad" in c.name.lower()]
+            all_fingers = left_fingers[:2] + right_fingers[:2]
+            while len(pads) < 4:
+                idx = len(pads) + 1
+                p = SpatialComponent(
+                    name=f"rubber_grip_pad_{idx}",
+                    parent=all_fingers[(idx - 1) % len(all_fingers)].name,
+                    primitive="cube",
+                    dimensions={"size": [0.035, 0.05, 0.12]},
+                    offset=[0.035 if "left" in all_fingers[(idx - 1) % len(all_fingers)].name else -0.035, 0.0, -0.08],
+                    rotation_deg=[0.0, 0.0, 0.0],
+                    material=MaterialSpec("High_Friction_Textured_Rubber", [0.06, 0.06, 0.08, 1.0], 0.0, 0.95),
+                )
+                bp.components.append(p)
+                pads.append(p)
+                parts_by_name[p.name] = p
+
+            for i, p in enumerate(pads):
+                target_finger = all_fingers[i % len(all_fingers)]
+                p.parent = target_finger.name
+                p.primitive = "cube"
+                p.dimensions = {"size": [0.035, 0.05, 0.12]}
+                is_left_finger = "left" in target_finger.name
+                p.offset = [0.035 if is_left_finger else -0.035, 0.0, -0.08]
+                p.rotation_deg = [0.0, 0.0, 0.0]
+                if p.material:
+                    p.material.name = "High_Friction_Textured_Rubber"
+                    p.material.color = [0.06, 0.06, 0.08, 1.0]
+                    p.material.metallic = 0.0
+                    p.material.roughness = 0.95
 
         # 3. Rocket Gimbal Assembly: Gimbal Ring Cradle, Chamber, Trunnion, Nozzle, Dome, Feed Lines
         gimbal_ring = None
@@ -783,84 +838,98 @@ class ProgressiveLoDDecomposer:
                 name="combustion_chamber",
                 parent=gimbal_ring.name if gimbal_ring else None,
                 primitive="cylinder",
-                dimensions={"radius": 0.45, "depth": 1.4},
+                dimensions={"radius": 0.42, "depth": 1.30},
                 offset=[0.0, 0.0, 0.0],
                 rotation_deg=[0.0, 20.0, 0.0],
-                material=MaterialSpec(name="Burnished_Copper", color=[0.96, 0.52, 0.18, 1.0], metallic=0.55, roughness=0.30),
+                material=MaterialSpec(name="Burnished_Copper", color=[0.94, 0.44, 0.12, 1.0], metallic=0.70, roughness=0.25),
             )
             bp.components.append(chamber)
             parts_by_name[chamber.name] = chamber
 
         if chamber:
-            chamber_d = float(chamber.dimensions.get("depth", 1.4))
-            chamber.dimensions = {"radius": 0.45, "depth": chamber_d}
+            chamber_d = float(chamber.dimensions.get("depth", 1.30))
+            chamber.dimensions = {"radius": 0.42, "depth": chamber_d}
             chamber.primitive = "cylinder"
             chamber.offset = [0.0, 0.0, 0.0]
-            chamber.rotation_deg = [0.0, 20.0, 0.0]  # Tilted 20° around Y (visible in front & top views!)
+            chamber.rotation_deg = [0.0, 20.0, 0.0]  # Clear 20° gimbal tilt visible in front and top views!
             if chamber.material:
                 chamber.material.name = "Burnished_Copper_Combustion_Chamber"
-                chamber.material.color = [0.96, 0.52, 0.18, 1.0]
-                chamber.material.metallic = 0.55
-                chamber.material.roughness = 0.30
+                chamber.material.color = [0.94, 0.44, 0.12, 1.0]
+                chamber.material.metallic = 0.70
+                chamber.material.roughness = 0.25
 
             if gimbal_ring:
                 gimbal_ring.parent = None
                 gimbal_ring.primitive = "torus"
-                gimbal_ring.dimensions = {"major_radius": 0.85, "minor_radius": 0.08}
+                gimbal_ring.dimensions = {"major_radius": 0.90, "minor_radius": 0.09}
                 gimbal_ring.offset = [0.0, 0.0, 0.0]
                 gimbal_ring.rotation_deg = [0.0, 0.0, 0.0]
                 chamber.parent = gimbal_ring.name
                 if gimbal_ring.material:
                     gimbal_ring.material.name = "Aerospace_Titanium_Gimbal_Ring"
-                    gimbal_ring.material.color = [0.35, 0.55, 0.75, 1.0]
-                    gimbal_ring.material.metallic = 0.50
-                    gimbal_ring.material.roughness = 0.30
+                    gimbal_ring.material.color = [0.22, 0.45, 0.78, 1.0]  # Aerospace Titanium Anodized Blue
+                    gimbal_ring.material.metallic = 0.60
+                    gimbal_ring.material.roughness = 0.25
 
-            # Trunnion (Horizontal Pivot Pin across gimbal axis)
-            for c in bp.components:
-                if ("pivot" in c.name.lower() or "trunnion" in c.name.lower() or "bracket" in c.name.lower()) or c.name in ("nozzle_pivot_bracket", "nozzle_pivot_trunnion"):
-                    c.parent = chamber.name
-                    c.primitive = "cylinder"
-                    c.dimensions = {"radius": 0.05, "depth": 1.70}
-                    c.offset = [0.0, 0.0, 0.0]
-                    c.rotation_deg = [90.0, 0.0, 0.0]
-                    if c.material:
-                        c.material.name = "Structural_Steel_Trunnion"
-                        c.material.color = [0.92, 0.94, 0.98, 1.0]
-                        c.material.metallic = 0.80
-                        c.material.roughness = 0.20
+            # Horizontal Pivot Trunnion Pins (cradled in gimbal ring)
+            has_trunnion = any(any(k in c.name.lower() for k in ("pivot", "trunnion", "bracket")) for c in bp.components)
+            if not has_trunnion:
+                trunnion = SpatialComponent(
+                    name="nozzle_pivot_trunnion",
+                    parent=chamber.name,
+                    primitive="cylinder",
+                    dimensions={"radius": 0.06, "depth": 1.90},
+                    offset=[0.0, 0.0, 0.0],
+                    rotation_deg=[90.0, 0.0, 0.0],
+                    material=MaterialSpec(name="High_Strength_Alloy_Pivot", color=[0.88, 0.90, 0.95, 1.0], metallic=0.85, roughness=0.15),
+                )
+                bp.components.append(trunnion)
+                parts_by_name[trunnion.name] = trunnion
+            else:
+                for c in bp.components:
+                    if ("pivot" in c.name.lower() or "trunnion" in c.name.lower() or "bracket" in c.name.lower()) or c.name in ("nozzle_pivot_bracket", "nozzle_pivot_trunnion"):
+                        c.parent = chamber.name
+                        c.primitive = "cylinder"
+                        c.dimensions = {"radius": 0.06, "depth": 1.90}
+                        c.offset = [0.0, 0.0, 0.0]
+                        c.rotation_deg = [90.0, 0.0, 0.0]
+                        if c.material:
+                            c.material.name = "High_Strength_Alloy_Pivot"
+                            c.material.color = [0.88, 0.90, 0.95, 1.0]
+                            c.material.metallic = 0.85
+                            c.material.roughness = 0.15
 
             # Conical Bell Exhaust Nozzle (bottom of chamber, inherits 20° tilt)
             for c in bp.components:
                 name_l = c.name.lower()
                 if ("nozzle" in name_l or "bell" in name_l) and c.name not in ("nozzle_pivot_bracket", "nozzle_pivot_trunnion"):
                     c.parent = chamber.name
-                    d_noz = 1.20
-                    c.dimensions = {"radius_bottom": 0.85, "radius_top": 0.35, "depth": d_noz}
+                    d_noz = 1.25
+                    c.dimensions = {"radius_bottom": 0.96, "radius_top": 0.32, "depth": d_noz}
                     c.primitive = "cone"
                     c.offset = [0.0, 0.0, -round((chamber_d / 2.0) + (d_noz / 2.0), 4)]
                     c.rotation_deg = [0.0, 0.0, 0.0]
                     if c.material:
                         c.material.name = "Burnished_Copper_Bell_Nozzle"
-                        c.material.color = [0.96, 0.52, 0.18, 1.0]
-                        c.material.metallic = 0.55
-                        c.material.roughness = 0.30
+                        c.material.color = [0.94, 0.44, 0.12, 1.0]
+                        c.material.metallic = 0.70
+                        c.material.roughness = 0.25
 
             # Injector Dome (top of chamber, inherits 20° tilt)
             if dome:
                 dome.parent = chamber.name
-                dome_r = 0.45
+                dome_r = 0.42
                 dome.primitive = "uv_sphere"
                 dome.dimensions = {"radius": dome_r}
-                dome.offset = [0.0, 0.0, round((chamber_d / 2.0) + (dome_r * 0.4), 4)]
+                dome.offset = [0.0, 0.0, round((chamber_d / 2.0) + (dome_r * 0.35), 4)]
                 dome.rotation_deg = [0.0, 0.0, 0.0]
                 if dome.material:
                     dome.material.name = "Aerospace_Titanium_Injector_Dome"
-                    dome.material.color = [0.35, 0.55, 0.75, 1.0]
-                    dome.material.metallic = 0.50
-                    dome.material.roughness = 0.30
+                    dome.material.color = [0.22, 0.45, 0.78, 1.0]  # Distinct aerospace titanium blue
+                    dome.material.metallic = 0.60
+                    dome.material.roughness = 0.25
 
-                # 4 Overhead Turbopump Feed Pipes entering the dome
+                # 4 Overhead Turbopump Feed Pipes entering the dome firmly
                 existing_pipes = [
                     c for c in bp.components
                     if any(k in c.name.lower() for k in ("feed_pipe", "fuel_pipe", "feed_line", "turbopump"))
@@ -871,35 +940,37 @@ class ProgressiveLoDDecomposer:
                         name=f"fuel_turbopump_feed_pipe_{idx}",
                         parent=dome.name,
                         primitive="cylinder",
-                        dimensions={"radius": 0.035, "depth": 1.0},
-                        offset=[0.0, 0.0, 0.5],
+                        dimensions={"radius": 0.04, "depth": 0.90},
+                        offset=[0.0, 0.0, 0.35],
                         rotation_deg=[0.0, 0.0, 0.0],
-                        material=MaterialSpec(name="Stainless_Steel_Feed_Lines", color=[0.90, 0.95, 1.0, 1.0], metallic=0.70, roughness=0.20),
+                        material=MaterialSpec(name="Stainless_Steel_Feed_Lines", color=[0.95, 0.98, 1.0, 1.0], metallic=0.85, roughness=0.15),
                     )
                     bp.components.append(new_pipe)
                     existing_pipes.append(new_pipe)
                     parts_by_name[new_pipe.name] = new_pipe
 
                 existing_pipes.sort(key=lambda p: p.name)
-                pipe_pitch = dome_r * 0.50
-                azimuth_deg = [45.0, 135.0, 225.0, 315.0]
+                pipe_pitch = 0.26
+                # Non-occluding azimuths so all 4 pipes are distinctly separated in Front view!
+                azimuth_deg = [30.0, 120.0, 210.0, 300.0]
                 for i, pipe in enumerate(existing_pipes):
-                    pipe_d = 1.0
+                    pipe_d = 0.90
                     ang = math.radians(azimuth_deg[i % len(azimuth_deg)])
                     pipe.parent = dome.name
                     pipe.primitive = "cylinder"
-                    pipe.dimensions = {"radius": 0.035, "depth": pipe_d}
+                    pipe.dimensions = {"radius": 0.050, "depth": pipe_d}
+                    # Penetrate 0.20m into the dome so they are firmly welded/connected with no air gap!
                     pipe.offset = [
                         round(pipe_pitch * math.cos(ang), 4),
                         round(pipe_pitch * math.sin(ang), 4),
-                        round((dome_r * 0.4) + (pipe_d / 2.0) - 0.05, 4),
+                        round((dome_r * 0.15) + (pipe_d / 2.0), 4),
                     ]
                     pipe.rotation_deg = [0.0, 0.0, 0.0]
                     if pipe.material:
                         pipe.material.name = "Stainless_Steel_Feed_Lines"
-                        pipe.material.color = [0.90, 0.95, 1.0, 1.0]
-                        pipe.material.metallic = 0.70
-                        pipe.material.roughness = 0.20
+                        pipe.material.color = [0.75, 0.78, 0.84, 1.0]
+                        pipe.material.metallic = 0.85
+                        pipe.material.roughness = 0.15
 
     def _generate_fallback_blueprint(self, goal: str, tier: int, stages: int) -> SpatialBlueprint:
         """Fallback blueprint when generation returns invalid JSON."""
@@ -1018,6 +1089,21 @@ def compile_blueprint_to_bpy(blueprint: SpatialBlueprint, output_obj_path: str) 
             if "bolt" in c.name.lower() or "hex" in c.name.lower():
                 verts = 6
             lines.append(f"bpy.ops.mesh.primitive_cylinder_add(radius={float(r):.4f}, depth={float(d):.4f}, vertices={verts})")
+            
+            inner_r = float(dims.get("inner_radius", dims.get("hole_radius", 0.0)))
+            if inner_r <= 0.0 and any(k in c.name.lower() for k in ("hollow", "pipe", "tube")) and "feed" not in c.name.lower() and float(r) > 0.10:
+                inner_r = round(float(r) * 0.72, 4)
+
+            if 0.0 < inner_r < float(r):
+                lines.append("target_cylinder = bpy.context.active_object")
+                lines.append(f"bpy.ops.mesh.primitive_cylinder_add(radius={inner_r:.4f}, depth={float(d) + 0.04:.4f}, vertices={verts})")
+                lines.append("cutter = bpy.context.active_object")
+                lines.append("mod = target_cylinder.modifiers.new(name='BoreHole', type='BOOLEAN')")
+                lines.append("mod.object = cutter")
+                lines.append("mod.operation = 'DIFFERENCE'")
+                lines.append("bpy.context.view_layer.objects.active = target_cylinder")
+                lines.append("bpy.ops.object.modifier_apply(modifier='BoreHole')")
+                lines.append("bpy.data.objects.remove(cutter, do_unlink=True)")
         elif prim == "cone":
             r1 = dims.get("radius1", dims.get("radius_bottom", dims.get("radius_flare", dims.get("radius_base", dims.get("radius", 0.5)))))
             r2 = dims.get("radius2", dims.get("radius_top", dims.get("radius_throat", dims.get("radius_neck", 0.0))))
@@ -1087,7 +1173,7 @@ def compile_blueprint_to_bpy(blueprint: SpatialBlueprint, output_obj_path: str) 
     # OBJ Export
     lines.extend([
         "# 3. Export Scene to OBJ",
-        f'bpy.ops.wm.obj_export(filepath=r"{escaped_path}")',
+        f'bpy.ops.wm.obj_export(filepath=r"{escaped_path}", up_axis="Z", forward_axis="Y")',
         'print("SENTINEL_3D_MODEL_EXPORTED_OK")',
     ])
 

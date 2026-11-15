@@ -78,10 +78,14 @@ bpy.ops.wm.read_factory_settings(use_empty=True)
 imported_objs = []
 try:
     if hasattr(bpy.ops.wm, "obj_import"):
-        bpy.ops.wm.obj_import(filepath=obj_path)
+        bpy.ops.wm.obj_import(filepath=obj_path, up_axis="Z", forward_axis="Y")
     else:
-        bpy.ops.import_scene.obj(filepath=obj_path)
+        bpy.ops.import_scene.obj(filepath=obj_path, axis_up="Z", axis_forward="Y")
     imported_objs = [o for o in bpy.context.scene.objects if o.type == 'MESH']
+    for o in imported_objs:
+        o.select_set(True)
+        bpy.context.view_layer.objects.active = o
+        bpy.ops.object.shade_smooth()
 except Exception as e:
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump({"error": f"Import failed: {e}", "success": False}, f)
@@ -203,36 +207,45 @@ scene = bpy.context.scene
 scene.render.resolution_x = 512
 scene.render.resolution_y = 512
 scene.render.resolution_percentage = 100
-scene.render.engine = 'BLENDER_WORKBENCH'
 scene.render.film_transparent = False
 
-# High-contrast studio backdrop so dark rubber and structural shaders are razor-sharp
-if not scene.world:
-    scene.world = bpy.data.worlds.new("StudioWorld")
-scene.world.use_nodes = False
-scene.world.color = (0.88, 0.88, 0.90)
+avail_engines = [item.identifier for item in scene.render.bl_rna.properties['engine'].enum_items]
+if 'BLENDER_EEVEE_NEXT' in avail_engines:
+    scene.render.engine = 'BLENDER_EEVEE_NEXT'
+    if hasattr(scene, 'eevee'):
+        scene.eevee.taa_render_samples = 16
+elif 'BLENDER_EEVEE' in avail_engines:
+    scene.render.engine = 'BLENDER_EEVEE'
+    if hasattr(scene, 'eevee'):
+        scene.eevee.taa_render_samples = 16
+else:
+    scene.render.engine = 'BLENDER_WORKBENCH'
 
-if hasattr(scene.display, "shading"):
-    scene.display.shading.color_type = 'MATERIAL'
-    scene.display.shading.light = 'STUDIO'
-    scene.display.shading.show_object_outline = True
-    scene.display.shading.show_cavity = True
-    scene.display.shading.cavity_type = 'BOTH'
-    scene.display.shading.show_specular_highlight = True
-    scene.display.shading.shadow_intensity = 0.25
+# Studio environment world
+world = bpy.data.worlds.new("StudioWorld")
+world.use_nodes = True
+bg = world.node_tree.nodes.get("Background")
+if bg:
+    bg.inputs["Color"].default_value = (0.85, 0.85, 0.88, 1.0)
+    bg.inputs["Strength"].default_value = 1.0
+scene.world = world
 
-# Natural balanced exposure to preserve material saturation and specular contrast
-if hasattr(scene, "view_settings"):
-    scene.view_settings.exposure = 0.10
+# 3-Point Studio Directional Lighting (Key, Fill, Rim)
+lights = [
+    ("KeySun", 4.0, (math.radians(45), math.radians(30), math.radians(60))),
+    ("FillSun", 2.0, (math.radians(45), math.radians(-30), math.radians(-60))),
+    ("RimSun", 2.5, (math.radians(-30), 0, math.radians(180))),
+]
+for name, energy, rot in lights:
+    l_data = bpy.data.lights.new(name=name, type='SUN')
+    l_data.energy = energy
+    if name != "KeySun":
+        l_data.use_shadow = False
+    l_obj = bpy.data.objects.new(name=name, object_data=l_data)
+    scene.collection.objects.link(l_obj)
+    l_obj.rotation_euler = rot
 
-# Add Light
-light_data = bpy.data.lights.new(name="StudioSun", type='SUN')
-light_data.energy = 3.0
-light_obj = bpy.data.objects.new(name="StudioSun", object_data=light_data)
-scene.collection.objects.link(light_obj)
-light_obj.rotation_euler = (math.radians(45), math.radians(30), math.radians(60))
-
-# Add Camera
+# Camera
 cam_data = bpy.data.cameras.new(name="InspectCam")
 cam_obj = bpy.data.objects.new(name="InspectCam", object_data=cam_data)
 scene.collection.objects.link(cam_obj)
@@ -268,12 +281,12 @@ def render_view(filename, dist_mult, elevation_deg, azimuth_deg, wireframe=False
     scene.render.filepath = os.path.join(output_dir, filename)
     bpy.ops.render.render(write_still=True)
 
-# Render 4 Perspectives (Standard Engineering Projections: Iso 45°, Front -Y (270°), Top +Z (89°), Detail 135°)
+# Render 4 Perspectives (Standard Orthographic CAD Alignment: Datum Azimuth 270°)
 try:
-    render_view("iso.png", dist_mult=1.5, elevation_deg=35, azimuth_deg=45)
-    render_view("front.png", dist_mult=1.4, elevation_deg=5, azimuth_deg=270)
-    render_view("top.png", dist_mult=1.5, elevation_deg=89, azimuth_deg=0)
-    render_view("detail.png", dist_mult=1.1, elevation_deg=20, azimuth_deg=135, wireframe=True)
+    render_view("iso.png", dist_mult=2.0, elevation_deg=35, azimuth_deg=305)
+    render_view("front.png", dist_mult=2.0, elevation_deg=0, azimuth_deg=270)
+    render_view("top.png", dist_mult=2.0, elevation_deg=89, azimuth_deg=270)
+    render_view("detail.png", dist_mult=1.5, elevation_deg=25, azimuth_deg=305, wireframe=True)
 except Exception as e:
     metrics["render_error"] = str(e)
 
@@ -363,6 +376,33 @@ class BlenderSensorRig:
                 "top": str(out_dir / "top.png"),
                 "detail": str(out_dir / "detail.png"),
             }
+
+            # Generate Unified CAD Engineering Triptych (1536 x 512)
+            try:
+                from PIL import Image, ImageDraw
+                iso_f = out_dir / "iso.png"
+                front_f = out_dir / "front.png"
+                top_f = out_dir / "top.png"
+                if iso_f.exists() and front_f.exists() and top_f.exists():
+                    triptych = Image.new("RGB", (512 * 3, 512))
+                    triptych.paste(Image.open(iso_f), (0, 0))
+                    triptych.paste(Image.open(front_f), (512, 0))
+                    triptych.paste(Image.open(top_f), (1024, 0))
+
+                    draw = ImageDraw.Draw(triptych)
+                    draw.rectangle([10, 10, 220, 36], fill=(0, 0, 0))
+                    draw.text((16, 14), "VIEW 1: ISOMETRIC", fill=(255, 255, 255))
+                    draw.rectangle([522, 10, 770, 36], fill=(0, 0, 0))
+                    draw.text((528, 14), "VIEW 2: FRONT ELEVATION", fill=(255, 255, 255))
+                    draw.rectangle([1034, 10, 1260, 36], fill=(0, 0, 0))
+                    draw.text((1040, 14), "VIEW 3: TOP PLAN", fill=(255, 255, 255))
+
+                    triptych_f = out_dir / "triptych.png"
+                    triptych.save(triptych_f)
+                    snapshots["triptych"] = str(triptych_f)
+            except Exception as e:
+                logger.warning("Failed to create triptych: %s", e)
+
             # Verify which snapshot files actually exist
             existing_snapshots = {k: v for k, v in snapshots.items() if Path(v).exists()}
 
