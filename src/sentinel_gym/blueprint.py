@@ -453,13 +453,7 @@ class ProgressiveLoDDecomposer:
             "9. METRIC UNIT CONVERSIONS (Meters vs Millimeters & Centimeters):\n"
             "   - All 3D coordinates and dimensions in Blender are in METERS (1.0 = 1 meter).\n"
             "   - If the goal or component specifies millimeters (e.g. 6.35mm, 12mm, 50mm), you MUST convert to meters:\n"
-            "     6.35mm = 0.00635, 12mm = 0.012, 50mm = 0.05. Never enter millimeter values as bare numbers in meters!\n"
-            "10. C-CLAMPS, PRESSES & OPPOSING JAWS (Throat Geometry & Clamp Screw Action):\n"
-            "   - Lower jaw extends forward along +X from the bottom of the spine: `offset_x = +(spine_width / 2.0 + jaw_length / 2.0)`, `offset_z = -spine_depth / 2.0`.\n"
-            "   - Upper boss arm extends forward along +X from the top of the spine: `offset_x = +(spine_width / 2.0 + arm_length / 2.0)`, `offset_z = +spine_depth / 2.0`.\n"
-            "   - Lead screw passes vertically through the upper boss arm, extending DOWNWARD (-Z) into the open throat cavity toward the anvil: `offset_z = -screw_depth * 0.30`.\n"
-            "   - Swivel clamp pad mounts at the lower tip of the vertical screw: `offset_z = -screw_depth / 2.0`.\n"
-            "   - Tommy bar / sliding handle mounts at the top head of the vertical screw: `offset_z = +screw_depth / 2.0`, horizontal crossbar (`rotation_deg = [0, 90, 0]`).\n\n"
+            "     6.35mm = 0.00635, 12mm = 0.012, 50mm = 0.05. Never enter millimeter values as bare numbers in meters!\n\n"
             "Output strictly a JSON object with keys:\n"
             '{"components": [{"name": "...", "parent": "..." or null, "primitive": "cylinder|cube|cone|uv_sphere|torus", '
             '"dimensions": {"radius": <float>, "depth": <float>} or {"size": [dx, dy, dz]}, "offset": [x, y, z], "rotation_deg": [rx, ry, rz]}]}'
@@ -675,19 +669,6 @@ class ProgressiveLoDDecomposer:
                         "description": f"Drive shaft/core component '{c.get('name')}' is positioned off-center at [{off[0]}, {off[1]}]. Central shafts must align concentrically at [0.0, 0.0] on their parent axis.",
                     })
 
-        # Check 6: Clamp Lead Screw Direction
-        for c in components:
-            name_l = c.get("name", "").lower()
-            if any(k in name_l for k in ("lead_screw", "clamp_screw", "clamping_screw")):
-                off = c.get("offset", [0, 0, 0])
-                if off and len(off) >= 3 and off[2] >= 0.0:
-                    violations.append({
-                        "type": "INVERTED_CLAMP_SCREW",
-                        "component": c.get("name"),
-                        "current_z": off[2],
-                        "description": f"Clamp screw '{c.get('name')}' has non-negative vertical offset Z={off[2]} pointing upward away from the clamp anvil. It must extend downward (-Z) through the upper boss arm into the open throat cavity toward the anvil foot.",
-                    })
-
         return violations
 
     def _apply_viability_guardrails(
@@ -757,13 +738,6 @@ class ProgressiveLoDDecomposer:
                 off[1] = 0.0
                 if "radius" in dims and float(dims["radius"]) < 0.008:
                     dims["radius"] = 0.008
-
-            # 5. Clamp Lead Screw Downward Advancement
-            if any(k in name.lower() for k in ("lead_screw", "clamp_screw", "clamping_screw")):
-                off = c.setdefault("offset", [0.0, 0.0, 0.0])
-                if len(off) >= 3 and off[2] >= 0.0:
-                    screw_d = float(dims.get("depth", dims.get("size", [0, 0, 0.6])[2] if isinstance(dims.get("size"), list) else 0.6))
-                    off[2] = -round(screw_d * 0.35, 4)
 
         return components
 

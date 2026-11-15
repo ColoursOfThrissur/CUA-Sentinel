@@ -4,6 +4,9 @@ import { Icon } from '../icons.js';
 export function CommandDeck({
   reactTrajectory,
   activeTasks,
+  selectedTaskId,
+  selectedTaskTrace,
+  onSelectTask,
   liveBlueprintStage,
   onCancelTask,
   onOpenViewport,
@@ -88,7 +91,7 @@ export function CommandDeck({
       `}
 
       <div className="spatial-grid-2col">
-      <!-- Left Column: ReAct Trajectory Stream -->
+      <!-- Left Column: Agent Execution Trace & ReAct Stream -->
       <div className="card-glass" style=${{ minHeight: '500px' }}>
         <div className="card-header">
           <div className="card-title-group">
@@ -96,25 +99,34 @@ export function CommandDeck({
               <${Icon} name="brain" size=${16} />
             </div>
             <div>
-              <div className="card-title">Autonomous ReAct Trajectory</div>
-              <div className="card-subtitle">Reason · Act · Observe · Reason inner execution trace</div>
+              <div className="card-title">
+                ${reactTrajectory ? 'Live ReAct Trajectory' : (selectedTaskTrace ? `Agent Trace: ${selectedTaskTrace.task_id}` : 'Agent Execution Trace')}
+              </div>
+              <div className="card-subtitle">
+                ${reactTrajectory ? 'Reason · Act · Observe multi-turn loop' : (selectedTaskTrace ? `${selectedTaskTrace.steps?.length || 0} Events · Attempt ${selectedTaskTrace.attempt_count || 1}/${selectedTaskTrace.max_attempts || 3}` : 'Select any task on the right to inspect its full trace')}
+              </div>
             </div>
           </div>
-          ${isExecutingReAct && html`
-            <div className="pill running">
-              <${Icon} name="activity" size=${12} />
-              <span>Multi-Turn Active</span>
-            </div>
-          `}
+          <div style=${{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            ${isExecutingReAct && html`
+              <div className="pill running">
+                <${Icon} name="activity" size=${12} />
+                <span>Multi-Turn Active</span>
+              </div>
+            `}
+            ${selectedTaskTrace && !reactTrajectory && html`
+              <span className=${`pill ${selectedTaskTrace.state}`}>${selectedTaskTrace.state}</span>
+            `}
+          </div>
         </div>
 
-        ${!reactTrajectory && !isExecutingReAct && html`
+        ${!reactTrajectory && !selectedTaskTrace && !isExecutingReAct && html`
           <div className="empty-state">
             <div className="empty-state-icon">
               <${Icon} name="terminal" size=${36} />
             </div>
             <div className="empty-state-text">
-              No active ReAct trajectory. Select <strong>ReAct Loop</strong> in the Omnibar below and dispatch a goal to watch the agent reason in real time.
+              No task selected. Click on any task in the <strong>Task Lifecycle Feed</strong> on the right to inspect its step-by-step agent trace.
             </div>
           </div>
         `}
@@ -130,7 +142,8 @@ export function CommandDeck({
           </div>
         `}
 
-        ${reactTrajectory && html`
+        <!-- Mode A: ReAct Trajectory -->
+        ${!isExecutingReAct && reactTrajectory && html`
           <div className="trajectory-container">
             <div style=${{ fontSize: '12px', color: '#94a3b8', marginBottom: '8px' }}>
               Goal: <strong style=${{ color: '#fff' }}>${reactTrajectory.goal}</strong>
@@ -225,6 +238,122 @@ export function CommandDeck({
             `}
           </div>
         `}
+
+        <!-- Mode B: Persisted Selected Task Execution Trace -->
+        ${!isExecutingReAct && !reactTrajectory && selectedTaskTrace && html`
+          <div className="trajectory-container">
+            <div style=${{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', background: 'rgba(255,255,255,0.03)', padding: '10px 14px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.06)' }}>
+              <div style=${{ fontSize: '12.5px', color: '#cbd5e1', fontWeight: 500, flex: 1, marginRight: '10px' }}>
+                <span style=${{ color: '#94a3b8', fontSize: '10.5px', display: 'block', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '2px' }}>Task Goal</span>
+                ${selectedTaskTrace.title || selectedTaskTrace.task_id}
+              </div>
+              ${selectedTaskTrace.artifact_filename && html`
+                <button
+                  className="btn btn-secondary"
+                  style=${{ fontSize: '11px', padding: '5px 12px', display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap' }}
+                  onClick=${() => onOpenViewport(selectedTaskTrace.artifact_filename)}
+                >
+                  <${Icon} name="eye" size=${12} />
+                  <span>Preview Artifact</span>
+                </button>
+              `}
+            </div>
+
+            ${(!selectedTaskTrace.steps || selectedTaskTrace.steps.length === 0) && html`
+              <div className="empty-state" style=${{ padding: '24px' }}>
+                <div className="empty-state-text">No execution steps or tool events recorded for this task.</div>
+              </div>
+            `}
+
+            ${(selectedTaskTrace.steps || []).map((step, idx) => {
+              if (step.type === 'transition') {
+                return html`
+                  <div key=${idx} className="trajectory-step">
+                    <div className="step-node-dot" style=${{ background: step.to_state === 'Succeeded' ? '#10b981' : step.to_state === 'Failed' ? '#ef4444' : '#38bdf8' }}></div>
+                    <div className="turn-header">
+                      <span className="turn-pill" style=${{ background: 'rgba(255,255,255,0.06)' }}>State Transition</span>
+                      <span style=${{ fontSize: '11px', color: '#64748b', fontFamily: 'var(--font-mono)' }}>
+                        ${new Date((step.ts || 0) * 1000).toLocaleTimeString()}
+                      </span>
+                    </div>
+                    <div className="card-glass" style=${{ padding: '10px 14px', background: 'rgba(255,255,255,0.02)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px' }}>
+                      <div style=${{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px' }}>
+                        <span className=${`pill ${step.from_state}`} style=${{ fontSize: '10px' }}>${step.from_state}</span>
+                        <span style=${{ color: '#64748b' }}>→</span>
+                        <span className=${`pill ${step.to_state}`} style=${{ fontSize: '10px' }}>${step.to_state}</span>
+                        <span style=${{ color: '#cbd5e1', marginLeft: '6px' }}>${step.reason}</span>
+                      </div>
+                    </div>
+                  </div>
+                `;
+              } else if (step.type === 'tool_execution') {
+                const scriptCode = step.intent?.script_code || (typeof step.intent === 'string' ? step.intent : null);
+                return html`
+                  <div key=${idx} className="trajectory-step">
+                    <div className="step-node-dot action-dot"></div>
+                    <div className="turn-header">
+                      <span className="turn-pill" style=${{ background: 'rgba(56, 189, 248, 0.15)', color: '#38bdf8' }}>
+                        Organ Execution · Attempt #${step.attempt || 1}
+                      </span>
+                      <span style=${{ fontSize: '11px', color: '#64748b', fontFamily: 'var(--font-mono)' }}>
+                        Lease #${step.lease_token || '--'} · ${new Date((step.ts || 0) * 1000).toLocaleTimeString()}
+                      </span>
+                    </div>
+
+                    <div className="action-card">
+                      <div className="action-header">
+                        <span style=${{ fontWeight: 600, color: '#f8fafc' }}>Motor Action</span>
+                        <span className="tool-name-badge">${step.tool_name}</span>
+                        <span className=${`pill ${step.status === 'OUTCOME_RECORDED' ? 'success' : 'failed'}`} style=${{ fontSize: '10px' }}>
+                          ${step.status}
+                        </span>
+                      </div>
+
+                      ${scriptCode ? html`
+                        <div style=${{ marginTop: '8px' }}>
+                          <div style=${{ fontSize: '11px', color: '#94a3b8', marginBottom: '4px' }}>Executed Script / Code Payload:</div>
+                          <pre style=${{ maxHeight: '180px', overflowY: 'auto', background: 'rgba(0,0,0,0.5)', padding: '8px 12px', borderRadius: '4px', fontSize: '11px', fontFamily: 'var(--font-mono)', color: '#38bdf8', whiteSpace: 'pre-wrap' }}>${scriptCode}</pre>
+                        </div>
+                      ` : html`
+                        <div style=${{ marginTop: '6px', fontSize: '11.5px', color: '#cbd5e1' }}>
+                          <strong>Intent Parameters:</strong> <code>${JSON.stringify(step.intent)}</code>
+                        </div>
+                      `}
+
+                      ${step.outcome && html`
+                        <div style=${{ marginTop: '6px', fontSize: '11.5px', color: '#34d399' }}>
+                          <strong>Outcome:</strong> <code>${typeof step.outcome === 'object' ? JSON.stringify(step.outcome) : step.outcome}</code>
+                        </div>
+                      `}
+                    </div>
+                  </div>
+                `;
+              } else if (step.type === 'mistake') {
+                return html`
+                  <div key=${idx} className="trajectory-step">
+                    <div className="step-node-dot" style=${{ background: '#f43f5e' }}></div>
+                    <div className="turn-header">
+                      <span className="turn-pill" style=${{ background: 'rgba(244, 63, 94, 0.15)', color: '#f43f5e' }}>
+                        Episodic Mistake Recorded
+                      </span>
+                      <span style=${{ fontSize: '11px', color: '#f43f5e' }}>${step.category}</span>
+                    </div>
+
+                    <div style=${{ background: 'rgba(244, 63, 94, 0.08)', border: '1px solid rgba(244, 63, 94, 0.25)', borderRadius: '6px', padding: '10px 14px' }}>
+                      <div style=${{ fontSize: '12px', color: '#fca5a5', marginBottom: '4px' }}>
+                        <strong>Signature:</strong> ${step.signature}
+                      </div>
+                      <div style=${{ fontSize: '11.5px', color: '#cbd5e1', fontFamily: 'var(--font-mono)' }}>
+                        <strong>Lesson:</strong> ${step.lesson}
+                      </div>
+                    </div>
+                  </div>
+                `;
+              }
+              return null;
+            })}
+          </div>
+        `}
       </div>
 
       <!-- Right Column: Recent Tasks & State Machine Transitions -->
@@ -258,24 +387,41 @@ export function CommandDeck({
             const domain = task.artifact_ext || (artifact ? artifact.split('.').pop() : 'report');
             const attempts = task.attempt_count || task.attempts || 1;
             const maxAttempts = task.max_attempts || 3;
+            const isSelected = taskId === selectedTaskId;
 
             return html`
               <div
                 key=${taskId}
                 className="card-glass"
-                style=${{ padding: '14px', background: 'rgba(255, 255, 255, 0.02)' }}
+                onClick=${() => onSelectTask && onSelectTask(taskId)}
+                style=${{
+                  padding: '14px',
+                  background: isSelected ? 'rgba(56, 189, 248, 0.08)' : 'rgba(255, 255, 255, 0.02)',
+                  border: isSelected ? '1px solid #38bdf8' : '1px solid rgba(255, 255, 255, 0.06)',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  boxShadow: isSelected ? '0 0 16px rgba(56, 189, 248, 0.15)' : 'none',
+                  transition: 'all 0.2s ease',
+                }}
               >
                 <div style=${{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
-                  <span style=${{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: '#64748b' }}>
-                    ${taskId}
-                  </span>
+                  <div style=${{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span style=${{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: isSelected ? '#38bdf8' : '#64748b', fontWeight: isSelected ? 600 : 400 }}>
+                      ${taskId}
+                    </span>
+                    ${isSelected && html`
+                      <span style=${{ fontSize: '9px', background: '#38bdf8', color: '#0f172a', padding: '1px 5px', borderRadius: '4px', fontWeight: 700 }}>
+                        ACTIVE TRACE
+                      </span>
+                    `}
+                  </div>
                   <div style=${{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                     <span className=${`pill ${task.state}`}>${task.state}</span>
                     ${['Running', 'Synthesizing', 'Verifying'].includes(task.state) && html`
                       <button
                         className="btn btn-danger"
                         style=${{ padding: '2px 8px', fontSize: '10px' }}
-                        onClick=${() => onCancelTask(taskId)}
+                        onClick=${(e) => { e.stopPropagation(); onCancelTask(taskId); }}
                         title="Cancel Task and Drain Process Tree"
                       >
                         <${Icon} name="square" size=${10} />
@@ -300,7 +446,7 @@ export function CommandDeck({
                       <button
                         className="btn btn-secondary"
                         style=${{ padding: '3px 8px', fontSize: '11px' }}
-                        onClick=${() => onOpenViewport(artifact)}
+                        onClick=${(e) => { e.stopPropagation(); onOpenViewport(artifact); }}
                       >
                         <${Icon} name="eye" size=${11} />
                         <span>Preview</span>
@@ -310,6 +456,7 @@ export function CommandDeck({
                         style=${{ padding: '3px 8px', fontSize: '11px' }}
                         href=${`/workspaces/${artifact}`}
                         download
+                        onClick=${(e) => e.stopPropagation()}
                       >
                         <${Icon} name="download" size=${11} />
                       </a>

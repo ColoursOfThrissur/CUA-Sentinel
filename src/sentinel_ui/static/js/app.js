@@ -31,6 +31,8 @@ export function App() {
   const [isDispatching, setIsDispatching] = useState(false);
   const [isExecutingReAct, setIsExecutingReAct] = useState(false);
   const [liveBlueprintStage, setLiveBlueprintStage] = useState(null);
+  const [selectedTaskId, setSelectedTaskId] = useState(null);
+  const [selectedTaskTrace, setSelectedTaskTrace] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
 
   // Initial Load
@@ -51,7 +53,14 @@ export function App() {
       ]);
 
       if (tel.status === 'fulfilled') setTelemetry(tel.value);
-      if (tsk.status === 'fulfilled') setTasks(tsk.value);
+      if (tsk.status === 'fulfilled') {
+        setTasks(tsk.value);
+        if (tsk.value && tsk.value.length > 0 && !selectedTaskId) {
+          const firstId = tsk.value[0].id;
+          setSelectedTaskId(firstId);
+          api.getTaskTrace(firstId).then((tr) => setSelectedTaskTrace(tr)).catch(() => {});
+        }
+      }
       if (ags.status === 'fulfilled') setAgents(ags.value);
       if (mods.status === 'fulfilled' && mods.value && mods.value.length > 0) setModels(mods.value);
       if (tpls.status === 'fulfilled') setDagTemplates(tpls.value);
@@ -268,6 +277,16 @@ export function App() {
     }
   };
 
+  const handleSelectTask = async (taskId) => {
+    setSelectedTaskId(taskId);
+    try {
+      const trace = await api.getTaskTrace(taskId);
+      setSelectedTaskTrace(trace);
+    } catch (err) {
+      console.error('Failed to load task trace:', err);
+    }
+  };
+
   return html`
     <div>
       <!-- Floating Top Navigation & Telemetry -->
@@ -366,6 +385,9 @@ export function App() {
           <${CommandDeck}
             reactTrajectory=${reactTrajectory}
             activeTasks=${tasks}
+            selectedTaskId=${selectedTaskId}
+            selectedTaskTrace=${selectedTaskTrace}
+            onSelectTask=${handleSelectTask}
             liveBlueprintStage=${liveBlueprintStage}
             onCancelTask=${handleCancelTask}
             onOpenViewport=${setActiveViewportArtifact}

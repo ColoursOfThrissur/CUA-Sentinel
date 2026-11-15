@@ -49,6 +49,7 @@ export const api = {
 
   // Tasks & Dispatch
   getTasks: () => request('/api/tasks'),
+  getTaskTrace: (taskId) => request(`/api/tasks/${taskId}/trace`),
   dispatchTask: (data) => request('/api/tasks/dispatch', { method: 'POST', body: JSON.stringify(data) }),
   cancelTask: (taskId) => request(`/api/tasks/${taskId}/cancel`, { method: 'POST' }),
 

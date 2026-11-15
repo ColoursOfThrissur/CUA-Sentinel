@@ -65,6 +65,7 @@ from sentinel_gym.critic import HarshCritic
 from sentinel_gym.curriculum import CurriculumGenerator
 from sentinel_gym.auto_refiner import AutoRefiner
 from sentinel_gym.daemon import GymnasiumDaemon
+from sentinel_gym.blueprint import ProgressiveLoDDecomposer, compile_blueprint_to_bpy
 
 logger = logging.getLogger("SentinelServer")
 
@@ -685,6 +686,103 @@ def list_tasks():
     return res
 
 
+@app.get("/api/tasks/{task_id}/trace")
+def get_task_trace(task_id: str):
+    task = db.execute_one("SELECT * FROM tasks WHERE id = ?", (task_id,))
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
+
+    task_dict = dict(task)
+
+    # 1. State machine transitions
+    transitions = db.execute_read(
+        "SELECT from_state, to_state, reason, transition_ts FROM task_transitions WHERE task_id = ? ORDER BY transition_ts ASC",
+        (task_id,),
+    )
+
+    # 2. Attempts & Side Effect Tool Executions
+    attempts = db.execute_read(
+        "SELECT id, attempt_number, lease_token, status, started_at, finished_at FROM attempts WHERE task_id = ? ORDER BY attempt_number ASC",
+        (task_id,),
+    )
+
+    steps = []
+    for tr in transitions:
+        steps.append({
+            "type": "transition",
+            "from_state": tr["from_state"],
+            "to_state": tr["to_state"],
+            "reason": tr["reason"],
+            "ts": tr["transition_ts"],
+        })
+
+    for att in attempts:
+        effects = db.execute_read(
+            "SELECT id, effect_class, tool_name, intent_payload, outcome_payload, status, created_at FROM side_effect_ledger WHERE attempt_id = ? ORDER BY created_at ASC",
+            (att["id"],),
+        )
+        for eff in effects:
+            try:
+                intent = json.loads(eff["intent_payload"])
+            except Exception:
+                intent = eff["intent_payload"]
+            try:
+                outcome = json.loads(eff["outcome_payload"]) if eff["outcome_payload"] else None
+            except Exception:
+                outcome = eff["outcome_payload"]
+            steps.append({
+                "type": "tool_execution",
+                "attempt": att["attempt_number"],
+                "lease_token": att["lease_token"],
+                "tool_name": eff["tool_name"],
+                "effect_class": eff["effect_class"],
+                "intent": intent,
+                "outcome": outcome,
+                "status": eff["status"],
+                "ts": eff["created_at"],
+            })
+
+    # 3. Mistakes
+    mistakes = db.execute_read(
+        "SELECT error_category, error_signature, context, lesson_learned, ts FROM mistake_ledger WHERE task_id = ? ORDER BY ts ASC",
+        (task_id,),
+    )
+    for m in mistakes:
+        steps.append({
+            "type": "mistake",
+            "category": m["error_category"],
+            "signature": m["error_signature"],
+            "lesson": m["lesson_learned"],
+            "ts": m["ts"],
+        })
+
+    steps.sort(key=lambda s: s.get("ts") or 0)
+
+    # Artifact info
+    matches = list(workspaces_dir.glob(f"{task_id}.*"))
+    if not matches and repo_workspaces_dir.exists():
+        matches = list(repo_workspaces_dir.glob(f"{task_id}.*"))
+    artifact_url = None
+    artifact_filename = None
+    if matches:
+        artifact_filename = matches[0].name
+        artifact_url = f"/workspaces/{matches[0].name}"
+
+    return {
+        "task_id": task_id,
+        "title": task_dict.get("title"),
+        "state": task_dict.get("state"),
+        "attempt_count": task_dict.get("attempt_count"),
+        "max_attempts": task_dict.get("max_attempts"),
+        "created_at": task_dict.get("created_at"),
+        "updated_at": task_dict.get("updated_at"),
+        "failure_reason": task_dict.get("failure_reason"),
+        "artifact_filename": artifact_filename,
+        "artifact_url": artifact_url,
+        "steps": steps,
+    }
+
+
 @app.post("/api/tasks/{task_id}/cancel")
 def cancel_task_endpoint(task_id: str):
     logger.info("Cancellation requested for task '%s' (AT-B-05)", task_id)
@@ -1095,25 +1193,41 @@ def execute_domain_step(
             return call_res.get("result", {})
 
         if domain == "3d":
-            logger.info("Executing 3D synthesis via LLM (%s) attempt %d/%d", selected_model, attempt_num, max_attempts)
-            rel_skills = skill_bank.find_relevant_skills(goal, domain="3d", limit=3)
+            logger.info("Executing 3D synthesis via Progressive LoD Decomposer (%s) attempt %d/%d", selected_model, attempt_num, max_attempts)
+            gw = LLMGateway(endpoint=config.llm.endpoint, default_model=selected_model)
+            decomposer = ProgressiveLoDDecomposer(llm_gateway=gw)
 
-            # Reflective Error-Feedback: Provide the previous script and exact compiler/runtime error on retry
-            prev_code = attempt_history[-1]["script"] if attempt_history else None
-            prev_error = attempt_history[-1]["error"] if attempt_history else None
+            try:
+                blueprint = decomposer.decompose(
+                    goal=goal,
+                    anti_patterns=anti_patterns,
+                    model=selected_model,
+                )
+                blender_script = compile_blueprint_to_bpy(blueprint, str(expected_artifact))
 
-            blender_script = synthesize_blender_script(
-                goal=goal,
-                output_obj_path=str(expected_artifact),
-                anti_patterns=anti_patterns,
-                use_llm=True,
-                model=selected_model,
-                relevant_skills=rel_skills,
-                attempt_num=attempt_num,
-                max_attempts=max_attempts,
-                previous_code=prev_code,
-                error_feedback=prev_error,
-            )
+                # Save blueprint json alongside the artifact for UI inspection
+                bp_json_path = expected_artifact.with_suffix(".json")
+                try:
+                    bp_json_path.write_text(blueprint.to_json(indent=2), encoding="utf-8")
+                except Exception:
+                    pass
+            except Exception as e:
+                logger.error("Progressive LoD Decomposition failed (%s); invoking procedural fallback", e)
+                rel_skills = skill_bank.find_relevant_skills(goal, domain="3d", limit=3)
+                prev_code = attempt_history[-1]["script"] if attempt_history else None
+                prev_error = attempt_history[-1]["error"] if attempt_history else None
+                blender_script = synthesize_blender_script(
+                    goal=goal,
+                    output_obj_path=str(expected_artifact),
+                    anti_patterns=anti_patterns,
+                    use_llm=True,
+                    model=selected_model,
+                    relevant_skills=rel_skills,
+                    attempt_num=attempt_num,
+                    max_attempts=max_attempts,
+                    previous_code=prev_code,
+                    error_feedback=prev_error,
+                )
             preflight = PreFlightLinter.sanitize(blender_script, domain="3d")
             if preflight.fatal_error:
                 logger.warning("PreFlightLinter fatal error in 3D script (%s) on attempt %d/%d.", preflight.fatal_error, attempt_num, max_attempts)
@@ -1668,8 +1782,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <option value="code_engineer">💻 Code Engineer (Python)</option>
         </select>
         <select id="select-model" class="bg-slate-950 border border-slate-700 text-sky-400 rounded-lg px-3 py-2 text-xs font-semibold outline-none">
-          <option value="qwen3.5:9b" selected>🧠 Qwen 3.5 (9B) [Active]</option>
+          <option value="qwen2.5-coder:14b" selected>🧠 Qwen 2.5 Coder (14B) [Active]</option>
           <option value="qwen3:14b-q4_K_M">🧠 Qwen 3 (14B Q4)</option>
+          <option value="qwen3.5:9b">🧠 Qwen 3.5 (9B)</option>
           <option value="qwen3-vl:8b">🧠 Qwen 3 VL (8B)</option>
           <option value="phi3:latest">🧠 Phi 3</option>
           <option value="mistral:7b">🧠 Mistral (7B)</option>
