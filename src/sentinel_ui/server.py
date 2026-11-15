@@ -24,7 +24,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import psutil
 
-from sentinel_core.config import SentinelConfig
+from sentinel_core.config import SentinelConfig, RetentionConfig
+from sentinel_core.pruner import StoragePruner
 from sentinel_core.db import SentinelDB
 from sentinel_core.state_machine import StateMachine
 from sentinel_core.side_effects import SideEffectLedger
@@ -607,7 +608,48 @@ def get_telemetry():
             "cpu_cap_percent": config.resource_quotas.cpu_rate_percent,
             "appcontainer_enabled": config.isolation.use_appcontainer,
         },
+        "storage": {
+            "retention_enabled": config.retention.enabled,
+            "max_task_age_days": config.retention.max_task_age_days,
+            "max_tasks_count": config.retention.max_tasks_count,
+            "db_size_mb": round((db_file.stat().st_size if db_file.exists() else 0) / (1024 * 1024), 2),
+        },
     }
+
+
+@app.get("/api/observability/storage")
+def get_storage_stats():
+    return StoragePruner.get_storage_summary(db, repo_workspaces_dir)
+
+
+class PruneRequest(BaseModel):
+    max_task_age_days: int | None = None
+    max_tasks_count: int | None = None
+    prune_workspaces: bool | None = None
+    deduplicate_mistakes: bool | None = None
+    vacuum: bool | None = None
+
+
+@app.post("/api/observability/prune")
+def prune_storage_endpoint(req: PruneRequest = None):
+    req_dict = req.dict() if req else {}
+    max_age = req_dict.get("max_task_age_days") if req_dict.get("max_task_age_days") is not None else config.retention.max_task_age_days
+    max_tasks = req_dict.get("max_tasks_count") if req_dict.get("max_tasks_count") is not None else config.retention.max_tasks_count
+    prune_ws = req_dict.get("prune_workspaces") if req_dict.get("prune_workspaces") is not None else config.retention.prune_orphan_workspaces
+    dedup = req_dict.get("deduplicate_mistakes") if req_dict.get("deduplicate_mistakes") is not None else config.retention.deduplicate_mistakes
+    vacuum = req_dict.get("vacuum") if req_dict.get("vacuum") is not None else config.retention.vacuum_db_on_prune
+
+    cfg = RetentionConfig(
+        enabled=True,
+        max_task_age_days=max_age,
+        max_tasks_count=max_tasks,
+        prune_orphan_workspaces=prune_ws,
+        deduplicate_mistakes=dedup,
+        vacuum_db_on_prune=vacuum,
+    )
+    result = StoragePruner.prune_all(db, repo_workspaces_dir, cfg)
+    broadcaster.emit("storage_pruned", result.to_dict())
+    return {"status": "success", "result": result.to_dict()}
 
 
 @app.get("/api/tasks")

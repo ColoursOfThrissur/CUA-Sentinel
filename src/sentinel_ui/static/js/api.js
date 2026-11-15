@@ -105,4 +105,8 @@ export const api = {
   getGymStatus: () => request('/api/gym/status'),
   startGym: (data = { max_hours: 5.0, domain: '3d' }) => request('/api/gym/start', { method: 'POST', body: JSON.stringify(data) }),
   stopGym: () => request('/api/gym/stop', { method: 'POST' }),
+
+  // Storage & Observability Retention
+  getStorageStats: () => request('/api/observability/storage'),
+  pruneStorage: (options = {}) => request('/api/observability/prune', { method: 'POST', body: JSON.stringify(options) }),
 };

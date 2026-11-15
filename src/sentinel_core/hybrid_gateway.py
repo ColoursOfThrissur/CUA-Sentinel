@@ -166,6 +166,8 @@ class HybridModelGateway:
         context: str = "",
         mode: str | None = None,
         temperature: float | None = None,
+        max_tokens: int | None = None,
+        **kwargs: Any,
     ) -> str:
         """Executes generation through the routed provider with automatic fallback."""
         decision = self.get_routing_decision(prompt, context=context, mode=mode)
@@ -176,10 +178,10 @@ class HybridModelGateway:
                 return self._generate_cloud(prompt=prompt, system=system, model=self.cfg.cloud_model, temperature=temperature)
             except Exception as e:
                 logger.warning("Cloud generation failed (%s). Falling back to local GPU.", e)
-                return self.local.generate(prompt=prompt, system=system, model=model or self.local.default_model, temperature=temperature)
+                return self.local.generate(prompt=prompt, system=system, model=model or self.local.default_model, temperature=temperature, max_tokens=max_tokens, **kwargs)
 
         # Local execution
-        local_res = self.local.generate(prompt=prompt, system=system, model=model or self.local.default_model, temperature=temperature)
+        local_res = self.local.generate(prompt=prompt, system=system, model=model or self.local.default_model, temperature=temperature, max_tokens=max_tokens, **kwargs)
 
         # Auto-escalation check for complex prompts if cloud is permitted & available
         if (

@@ -88,6 +88,16 @@ class HybridGatewayConfig:
 
 
 @dataclass
+class RetentionConfig:
+    enabled: bool = True
+    max_task_age_days: int = 7
+    max_tasks_count: int = 500
+    prune_orphan_workspaces: bool = True
+    deduplicate_mistakes: bool = True
+    vacuum_db_on_prune: bool = True
+
+
+@dataclass
 class SentinelConfig:
     environment: str = "development"
     log_level: str = "INFO"
@@ -99,6 +109,7 @@ class SentinelConfig:
     network_policy: NetworkPolicyConfig = field(default_factory=NetworkPolicyConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     hybrid_gateway: HybridGatewayConfig = field(default_factory=HybridGatewayConfig)
+    retention: RetentionConfig = field(default_factory=RetentionConfig)
 
     @classmethod
     def load(cls, config_path: str | Path | None = None) -> SentinelConfig:
@@ -117,6 +128,7 @@ class SentinelConfig:
         net_data = data.get("network_policy", {})
         llm_data = data.get("llm", {})
         hybrid_data = data.get("hybrid_gateway", {})
+        retention_data = data.get("retention", {})
 
         return cls(
             environment=data.get("system", {}).get("environment", "development"),
@@ -129,6 +141,7 @@ class SentinelConfig:
             network_policy=NetworkPolicyConfig(**net_data),
             llm=LLMConfig(**llm_data),
             hybrid_gateway=HybridGatewayConfig(**hybrid_data),
+            retention=RetentionConfig(**retention_data),
         )
 
     def save(self, config_path: str | Path | None = None):
@@ -146,6 +159,7 @@ class SentinelConfig:
             "network_policy": asdict(self.network_policy),
             "llm": asdict(self.llm),
             "hybrid_gateway": asdict(self.hybrid_gateway),
+            "retention": asdict(self.retention),
         }
         p.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
 
@@ -161,6 +175,7 @@ class SentinelConfig:
             "network_policy": asdict(self.network_policy),
             "llm": asdict(self.llm),
             "hybrid_gateway": asdict(self.hybrid_gateway),
+            "retention": asdict(self.retention),
         }
 
     def update_from_dict(self, data: dict[str, Any]):
@@ -176,6 +191,10 @@ class SentinelConfig:
             for k, v in data["isolation"].items():
                 if hasattr(self.isolation, k):
                     setattr(self.isolation, k, v)
+        if "storage" in data:
+            for k, v in data["storage"].items():
+                if hasattr(self.storage, k):
+                    setattr(self.storage, k, v)
         if "policy" in data:
             for k, v in data["policy"].items():
                 if hasattr(self.policy, k):
@@ -192,3 +211,7 @@ class SentinelConfig:
             for k, v in data["hybrid_gateway"].items():
                 if hasattr(self.hybrid_gateway, k):
                     setattr(self.hybrid_gateway, k, v)
+        if "retention" in data:
+            for k, v in data["retention"].items():
+                if hasattr(self.retention, k):
+                    setattr(self.retention, k, v)

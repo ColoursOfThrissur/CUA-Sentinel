@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -79,17 +80,27 @@ class HarshCritic:
 
         # 2. VISION CRITIC (Direct visual inspection of rendered artifact via local multimodal model)
         iso_snapshot = inspection.snapshots.get("iso")
-        if self.gateway and iso_snapshot and Path(iso_snapshot).exists():
+        front_snapshot = inspection.snapshots.get("front")
+        top_snapshot = inspection.snapshots.get("top")
+        images_to_send = []
+        if iso_snapshot and Path(iso_snapshot).exists():
+            images_to_send.append(base64.b64encode(Path(iso_snapshot).read_bytes()).decode("utf-8"))
+        if front_snapshot and Path(front_snapshot).exists():
+            images_to_send.append(base64.b64encode(Path(front_snapshot).read_bytes()).decode("utf-8"))
+        if top_snapshot and Path(top_snapshot).exists():
+            images_to_send.append(base64.b64encode(Path(top_snapshot).read_bytes()).decode("utf-8"))
+
+        if self.gateway and images_to_send:
             try:
-                img_bytes = Path(iso_snapshot).read_bytes()
-                img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+                parts_str = ", ".join(parts[:16]) if parts else "assembly components"
                 vision_prompt = (
-                    "Evaluate this rendered 3D model against the user's design goal.\n"
-                    f"Goal: {goal}\n\n"
+                    "Evaluate the rendered 3D model across perspectives (Image 1: Isometric 3D View, Image 2: Front Elevation Profile, Image 3: Top Down Plan View) against the user's design goal.\n"
+                    f"Goal: {goal}\n"
+                    f"BOM Components in Assembly: {parts_str}\n\n"
                     "Evaluate strictly across 4 categories (each 0 to 25):\n"
                     "1. visual_resemblance (0-25): Does the rendered image visually look like the intended object?\n"
                     "2. component_alignment (0-25): Are components physically connected and aligned (e.g. tubes attached to mounts, legs touching ground and spread wide, knobs on tubes), or floating disconnected in space?\n"
-                    "3. material_contrast (0-25): Are materials visibly distinct and contrasting (e.g. brass vs enamel blue, metal vs rubber), or generic/monochromatic?\n"
+                    "3. material_contrast (0-25): Are materials visibly distinct and contrasting (e.g. brass vs enamel blue, copper vs titanium, metal vs rubber), or generic/monochromatic?\n"
                     "4. functional_proportion (0-25): Are proportions, aspect ratios, and relative sizes mechanically realistic?\n\n"
                     "Output strictly valid JSON with no markdown and no thinking:\n"
                     '{"visual_resemblance": <int>, "component_alignment": <int>, "material_contrast": <int>, '
@@ -100,8 +111,8 @@ class HarshCritic:
                     prompt=vision_prompt,
                     model=self.vision_model,
                     temperature=0.1,
-                    max_tokens=1500,
-                    images=[img_b64],
+                    max_tokens=4096,
+                    images=images_to_send,
                 )
                 clean_vis = vis_resp.strip()
                 if "```json" in clean_vis:
@@ -109,7 +120,39 @@ class HarshCritic:
                 elif "```" in clean_vis:
                     clean_vis = clean_vis.split("```")[1].split("```")[0].strip()
 
-                data = json.loads(clean_vis)
+                data = {}
+                try:
+                    data = json.loads(clean_vis)
+                except Exception:
+                    brace_m = re.search(r"(\{[^{}]*\"visual_resemblance\"[^{}]*\})", clean_vis, re.DOTALL)
+                    if not brace_m:
+                        brace_m = re.search(r"(\{.*\})", clean_vis, re.DOTALL)
+                    if brace_m:
+                        try:
+                            data = json.loads(brace_m.group(1))
+                        except Exception:
+                            pass
+
+                if not data:
+                    # Resilient regex extraction if string was unterminated or truncated
+                    vr_m = re.search(r'"visual_resemblance":\s*(\d+)', clean_vis)
+                    ca_m = re.search(r'"component_alignment":\s*(\d+)', clean_vis)
+                    mc_m = re.search(r'"material_contrast":\s*(\d+)', clean_vis)
+                    fp_m = re.search(r'"functional_proportion":\s*(\d+)', clean_vis)
+                    cq_m = re.search(r'"critique":\s*"([^"\\]*(?:\\.[^"\\]*)*)"?', clean_vis)
+                    rm_m = re.search(r'"remediation_advice":\s*"([^"\\]*(?:\\.[^"\\]*)*)"?', clean_vis)
+                    ap_m = re.search(r'"anti_pattern":\s*"([^"\\]*(?:\\.[^"\\]*)*)"?', clean_vis)
+                    if vr_m or ca_m or mc_m or fp_m:
+                        data = {
+                            "visual_resemblance": int(vr_m.group(1)) if vr_m else 15,
+                            "component_alignment": int(ca_m.group(1)) if ca_m else 15,
+                            "material_contrast": int(mc_m.group(1)) if mc_m else 15,
+                            "functional_proportion": int(fp_m.group(1)) if fp_m else 15,
+                            "critique": cq_m.group(1) if cq_m else "Multi-perspective visual inspection complete.",
+                            "remediation_advice": rm_m.group(1) if rm_m else "Maintain geometric alignment across views.",
+                            "anti_pattern": ap_m.group(1) if ap_m else None,
+                        }
+
                 v_res = max(0, min(25, int(data.get("visual_resemblance", 10))))
                 c_align = max(0, min(25, int(data.get("component_alignment", 10))))
                 m_cont = max(0, min(25, int(data.get("material_contrast", 10))))

@@ -35,3 +35,12 @@ llm:
   temperature: 0.2
   repeat_penalty: 1.15
   num_predict: 2048
+
+retention:
+  enabled: true
+  max_task_age_days: 7
+  max_tasks_count: 500
+  prune_orphan_workspaces: true
+  deduplicate_mistakes: true
+  vacuum_db_on_prune: true
+

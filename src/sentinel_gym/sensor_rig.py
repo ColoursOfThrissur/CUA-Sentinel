@@ -191,14 +191,39 @@ metrics = {
 }
 
 # 4. Set up Camera and Studio Lighting for 4-angle visual rendering
+# Synchronize Viewport diffuse_color with Principled BSDF Base Color for high-fidelity Workbench rendering
+for mat in bpy.data.materials:
+    if mat and mat.use_nodes and mat.node_tree:
+        bsdf = mat.node_tree.nodes.get('Principled BSDF')
+        if bsdf and 'Base Color' in bsdf.inputs:
+            c = bsdf.inputs['Base Color'].default_value
+            mat.diffuse_color = (c[0], c[1], c[2], 1.0)
+
 scene = bpy.context.scene
 scene.render.resolution_x = 512
 scene.render.resolution_y = 512
 scene.render.resolution_percentage = 100
 scene.render.engine = 'BLENDER_WORKBENCH'
+scene.render.film_transparent = False
+
+# High-contrast studio backdrop so dark rubber and structural shaders are razor-sharp
+if not scene.world:
+    scene.world = bpy.data.worlds.new("StudioWorld")
+scene.world.use_nodes = False
+scene.world.color = (0.88, 0.88, 0.90)
+
 if hasattr(scene.display, "shading"):
     scene.display.shading.color_type = 'MATERIAL'
     scene.display.shading.light = 'STUDIO'
+    scene.display.shading.show_object_outline = True
+    scene.display.shading.show_cavity = True
+    scene.display.shading.cavity_type = 'BOTH'
+    scene.display.shading.show_specular_highlight = True
+    scene.display.shading.shadow_intensity = 0.25
+
+# Natural balanced exposure to preserve material saturation and specular contrast
+if hasattr(scene, "view_settings"):
+    scene.view_settings.exposure = 0.10
 
 # Add Light
 light_data = bpy.data.lights.new(name="StudioSun", type='SUN')
@@ -243,12 +268,12 @@ def render_view(filename, dist_mult, elevation_deg, azimuth_deg, wireframe=False
     scene.render.filepath = os.path.join(output_dir, filename)
     bpy.ops.render.render(write_still=True)
 
-# Render 4 Perspectives
+# Render 4 Perspectives (Standard Engineering Projections: Iso 45°, Front -Y (270°), Top +Z (89°), Detail 135°)
 try:
-    render_view("iso.png", dist_mult=2.4, elevation_deg=35, azimuth_deg=45)
-    render_view("front.png", dist_mult=2.2, elevation_deg=5, azimuth_deg=0)
-    render_view("top.png", dist_mult=2.6, elevation_deg=89, azimuth_deg=0)
-    render_view("detail.png", dist_mult=1.6, elevation_deg=20, azimuth_deg=135, wireframe=True)
+    render_view("iso.png", dist_mult=1.5, elevation_deg=35, azimuth_deg=45)
+    render_view("front.png", dist_mult=1.4, elevation_deg=5, azimuth_deg=270)
+    render_view("top.png", dist_mult=1.5, elevation_deg=89, azimuth_deg=0)
+    render_view("detail.png", dist_mult=1.1, elevation_deg=20, azimuth_deg=135, wireframe=True)
 except Exception as e:
     metrics["render_error"] = str(e)
 

@@ -71,7 +71,8 @@ class LLMGateway:
                 "top_p": 0.9,
                 "repeat_penalty": use_repeat_penalty,
                 "repeat_last_n": 64,
-                "num_predict": use_tokens,
+                "num_predict": 4096 if images else use_tokens,
+                "num_ctx": 16384 if images else 8192,
             },
         }
         if system:
@@ -94,8 +95,13 @@ class LLMGateway:
                 if not resp_text and res_json.get("thinking"):
                     logger.warning("LLM response field empty; extracting content from thinking field")
                     raw_thinking = res_json.get("thinking", "").strip()
-                    # Strip leading "Thinking Process:" if followed by actual markdown content
-                    resp_text = re.sub(r"^Thinking Process:.*?(?=# |\*\*|## )", "", raw_thinking, flags=re.DOTALL).strip()
+                    # Check if thinking ends with or contains a JSON block
+                    json_match = re.search(r"(```json\s*\{.*?\}\s*```|\{[^{}]*\"visual_resemblance\"[^{}]*\})", raw_thinking, re.DOTALL)
+                    if json_match:
+                        resp_text = json_match.group(1).strip()
+                    else:
+                        # Strip leading "Thinking Process:" if followed by actual markdown content
+                        resp_text = re.sub(r"^Thinking Process:.*?(?=# |\*\*|## )", "", raw_thinking, flags=re.DOTALL).strip()
                     if not resp_text:
                         resp_text = raw_thinking
 
@@ -251,6 +257,7 @@ class LLMGateway:
             "6. ALWAYS assign a Principled BSDF material with contrasting color and texture to each object:\n"
             "   mat = bpy.data.materials.new(name='MyPart_Mat')\n"
             "   mat.use_nodes = True\n"
+            "   mat.diffuse_color = (R, G, B, 1.0)  # REQUIRED for Blender Workbench viewport rendering!\n"
             "   bsdf = mat.node_tree.nodes.get('Principled BSDF')\n"
             "   bsdf.inputs['Base Color'].default_value = (R, G, B, 1.0)  # floats 0-1\n"
             "   bsdf.inputs['Metallic'].default_value = 0.9  # 0.9=metal, 0.0=matte/rubber\n"

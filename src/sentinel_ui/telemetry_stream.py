@@ -78,9 +78,8 @@ class TelemetryBroadcaster:
             self._main_loop.call_soon_threadsafe(_enqueue)
         else:
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    loop.call_soon_threadsafe(_enqueue)
+                loop = asyncio.get_running_loop()
+                loop.call_soon_threadsafe(_enqueue)
             except RuntimeError:
                 pass
 
