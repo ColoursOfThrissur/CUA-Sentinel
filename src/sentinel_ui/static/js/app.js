@@ -55,10 +55,16 @@ export function App() {
       if (tel.status === 'fulfilled') setTelemetry(tel.value);
       if (tsk.status === 'fulfilled') {
         setTasks(tsk.value);
-        if (tsk.value && tsk.value.length > 0 && !selectedTaskId) {
-          const firstId = tsk.value[0].id;
-          setSelectedTaskId(firstId);
-          api.getTaskTrace(firstId).then((tr) => setSelectedTaskTrace(tr)).catch(() => {});
+        if (tsk.value && tsk.value.length > 0) {
+          const currentId = selectedTaskId || tsk.value[0].id;
+          if (!selectedTaskId) {
+            setSelectedTaskId(currentId);
+          }
+          if (!selectedTaskTrace || selectedTaskTrace.task_id !== currentId) {
+            api.getTaskTrace(currentId)
+              .then((tr) => setSelectedTaskTrace(tr))
+              .catch(() => {});
+          }
         }
       }
       if (ags.status === 'fulfilled') setAgents(ags.value);
@@ -113,6 +119,11 @@ export function App() {
         setTelemetry(tel);
         setTasks(tsk);
         if (Array.isArray(apprs)) setPendingApprovals(apprs);
+        if (selectedTaskId && selectedTaskTrace && ['Running', 'Synthesizing', 'Verifying', 'Queued'].includes(selectedTaskTrace.state)) {
+          api.getTaskTrace(selectedTaskId)
+            .then((tr) => setSelectedTaskTrace(tr))
+            .catch(() => {});
+        }
         if (selectedDagRun && (selectedDagRun.state === 'Running' || selectedDagRun.state === 'Pending')) {
           const updatedDag = await api.getDagStatus(selectedDagRun.id);
           setSelectedDagRun(updatedDag);
@@ -279,6 +290,7 @@ export function App() {
 
   const handleSelectTask = async (taskId) => {
     setSelectedTaskId(taskId);
+    setReactTrajectory(null); // Switch view directly to the selected task trace
     try {
       const trace = await api.getTaskTrace(taskId);
       setSelectedTaskTrace(trace);

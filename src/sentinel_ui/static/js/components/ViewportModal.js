@@ -39,6 +39,7 @@ export function ViewportModal({ artifactName, onClose }) {
   const cameraRef = useRef(null);
   const controlsRef = useRef(null);
   const meshRef = useRef(null);
+  const autoRotateRef = useRef(true);
 
   const cleanName = artifactName ? artifactName.split(/[/\\]/).pop() : '';
   const fileType = cleanName ? cleanName.split('.').pop().toLowerCase() : '';
@@ -216,11 +217,15 @@ export function ViewportModal({ artifactName, onClose }) {
             // Ensure every mesh has its OWN isolated cloned material instance
             if (child.material) {
               if (Array.isArray(child.material)) {
-                child.material = child.material.map((m) => m.clone());
+                child.material = child.material.map((m) => {
+                  const cl = m.clone();
+                  cl.wireframe = isWireframe;
+                  return cl;
+                });
               } else {
                 child.material = child.material.clone();
+                child.material.wireframe = isWireframe;
               }
-              child.material.wireframe = isWireframe;
             } else {
               child.material = new THREE.MeshStandardMaterial({
                 color: 0x93c5fd,
@@ -246,18 +251,23 @@ export function ViewportModal({ artifactName, onClose }) {
         obj.position.z -= center.z * scale;
 
         // Record per-child original local position and radial explode vector for Exploded View
+        let partIdx = 0;
         obj.traverse((child) => {
           if (child.isMesh) {
             child.userData.origPos = child.position.clone();
             const childBox = new THREE.Box3().setFromObject(child);
             const childCenter = childBox.getCenter(new THREE.Vector3());
-            const dir = childCenter.clone().sub(center);
+            // Direction outward from assembly origin (world center is at 0,0,0)
+            const dir = childCenter.clone();
             if (dir.lengthSq() < 0.0001) {
-              dir.set(0, 1, 0);
+              // Fallback for centered components: distribute along radial angles
+              const angle = (partIdx * Math.PI * 2) / 6;
+              dir.set(Math.cos(angle), (partIdx % 2 === 0 ? 0.6 : -0.6), Math.sin(angle));
             } else {
               dir.normalize();
             }
             child.userData.explodeDir = dir;
+            partIdx++;
           }
         });
 
@@ -294,7 +304,7 @@ export function ViewportModal({ artifactName, onClose }) {
       let animationFrameId;
       const animate = () => {
         animationFrameId = requestAnimationFrame(animate);
-        if (currentMesh && autoRotate) {
+        if (currentMesh && autoRotateRef.current) {
           currentMesh.rotation.y += 0.004;
         }
         controls.update();
@@ -337,10 +347,21 @@ export function ViewportModal({ artifactName, onClose }) {
     if (meshRef.current) {
       meshRef.current.traverse((child) => {
         if (child.isMesh && child.material) {
-          child.material.wireframe = nextState;
+          const mats = Array.isArray(child.material) ? child.material : [child.material];
+          mats.forEach((m) => {
+            if (m) m.wireframe = nextState;
+          });
         }
       });
     }
+  };
+
+  const toggleAutoRotate = () => {
+    setAutoRotate((prev) => {
+      const next = !prev;
+      autoRotateRef.current = next;
+      return next;
+    });
   };
 
   const resetCamera = () => {
@@ -355,7 +376,7 @@ export function ViewportModal({ artifactName, onClose }) {
     if (!meshRef.current) return;
     meshRef.current.traverse((child) => {
       if (child.isMesh && child.userData.origPos && child.userData.explodeDir) {
-        child.position.copy(child.userData.origPos).addScaledVector(child.userData.explodeDir, factor * 0.75);
+        child.position.copy(child.userData.origPos).addScaledVector(child.userData.explodeDir, factor * 0.85);
       }
     });
   };
@@ -855,7 +876,7 @@ export function ViewportModal({ artifactName, onClose }) {
                   </button>
                   <button
                     className=${autoRotate ? 'active' : ''}
-                    onClick=${() => setAutoRotate(!autoRotate)}
+                    onClick=${toggleAutoRotate}
                     title="Toggle continuous turntable rotation"
                   >
                     ${autoRotate ? 'Pause Rotation' : 'Auto Rotate'}

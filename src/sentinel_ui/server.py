@@ -87,6 +87,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def add_no_cache_header(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/static") or path == "/" or path.startswith("/workspaces"):
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
 # Global Sentinel Context
 CONFIG_PATH = Path("config.yaml")
 config = SentinelConfig.load(CONFIG_PATH)
@@ -758,15 +769,21 @@ def get_task_trace(task_id: str):
 
     steps.sort(key=lambda s: s.get("ts") or 0)
 
-    # Artifact info
+    # Artifact info (prioritizing .obj, .csv, .md, .py over .mtl or other companion files)
     matches = list(workspaces_dir.glob(f"{task_id}.*"))
     if not matches and repo_workspaces_dir.exists():
         matches = list(repo_workspaces_dir.glob(f"{task_id}.*"))
     artifact_url = None
     artifact_filename = None
     if matches:
-        artifact_filename = matches[0].name
-        artifact_url = f"/workspaces/{matches[0].name}"
+        def art_priority(p: Path):
+            s = p.suffix.lower()
+            if s == '.obj': return 0
+            if s in ['.csv', '.md', '.py', '.txt']: return 1
+            return 2
+        art = sorted(matches, key=lambda p: (art_priority(p), -p.stat().st_mtime))[0]
+        artifact_filename = art.name
+        artifact_url = f"/workspaces/{art.name}"
 
     return {
         "task_id": task_id,

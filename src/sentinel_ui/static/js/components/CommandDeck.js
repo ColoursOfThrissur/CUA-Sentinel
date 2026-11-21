@@ -321,8 +321,18 @@ export function CommandDeck({
                       `}
 
                       ${step.outcome && html`
-                        <div style=${{ marginTop: '6px', fontSize: '11.5px', color: '#34d399' }}>
-                          <strong>Outcome:</strong> <code>${typeof step.outcome === 'object' ? JSON.stringify(step.outcome) : step.outcome}</code>
+                        <div style=${{ marginTop: '8px' }}>
+                          <div style=${{ fontSize: '11px', color: '#34d399', fontWeight: 600, marginBottom: '4px' }}>
+                            Execution Outcome (${step.outcome?.duration_sec ? `${step.outcome.duration_sec}s` : 'Completed'}):
+                          </div>
+                          ${step.outcome?.stdout ? html`
+                            <pre style=${{ maxHeight: '130px', overflowY: 'auto', background: 'rgba(0,0,0,0.4)', padding: '6px 10px', borderRadius: '4px', fontSize: '10.5px', fontFamily: 'var(--font-mono)', color: '#a7f3d0', whiteSpace: 'pre-wrap' }}>${step.outcome.stdout.trim()}</pre>
+                          ` : html`
+                            <pre style=${{ maxHeight: '130px', overflowY: 'auto', background: 'rgba(0,0,0,0.4)', padding: '6px 10px', borderRadius: '4px', fontSize: '10.5px', fontFamily: 'var(--font-mono)', color: '#cbd5e1', whiteSpace: 'pre-wrap' }}>${typeof step.outcome === 'object' ? JSON.stringify(step.outcome, null, 2) : String(step.outcome)}</pre>
+                          `}
+                          ${step.outcome?.stderr && html`
+                            <pre style=${{ maxHeight: '100px', overflowY: 'auto', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', padding: '6px 10px', borderRadius: '4px', fontSize: '10.5px', fontFamily: 'var(--font-mono)', color: '#fca5a5', whiteSpace: 'pre-wrap', marginTop: '4px' }}>${step.outcome.stderr.trim()}</pre>
+                          `}
                         </div>
                       `}
                     </div>
