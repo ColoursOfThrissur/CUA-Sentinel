@@ -46,6 +46,45 @@ def find_blender_executable() -> str:
 def register_blender_organs(registry: ToolRegistry):
 
     @registry.register(
+        name="blender_progressive_lod_synthesize",
+        description=(
+            "Synthesizes high-fidelity 3D models via Progressive Level-of-Detail (LoD) Decomposition "
+            "and Stage 3.5 ReAct physical viability verification. Generates clean multi-part geometry "
+            "with zero floating parts and proper scale grounding."
+        ),
+        effect_class=EffectClass.NON_IDEMPOTENT_WRITE,
+        parameters_schema={
+            "goal": "str (Natural language prompt or mechanical specification for the 3D asset)",
+            "output_obj_path": "str (Target path where the final OBJ file will be exported)",
+            "model": "str (optional LLM model, defaults to qwen2.5-coder:14b)",
+        },
+    )
+    def blender_progressive_lod_synthesize(params: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+        from sentinel_core.llm_gateway import LLMGateway
+        from sentinel_gym.blueprint import ProgressiveLoDDecomposer, compile_blueprint_to_bpy
+        goal = params.get("goal", "")
+        output_obj = params.get("output_obj_path") or "workspaces/synthesized_model.obj"
+        output_obj_path = Path(output_obj).resolve()
+        output_obj_path.parent.mkdir(parents=True, exist_ok=True)
+        model = params.get("model", "qwen2.5-coder:14b")
+
+        gw = LLMGateway(default_model=model)
+        decomposer = ProgressiveLoDDecomposer(llm_gateway=gw)
+        blueprint = decomposer.decompose(goal=goal, model=model)
+        bpy_script = compile_blueprint_to_bpy(blueprint, str(output_obj_path))
+
+        try:
+            output_obj_path.with_suffix(".json").write_text(blueprint.to_json(indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+        blender_exe = find_blender_executable()
+        res = _run_blender_script(blender_exe, bpy_script, str(output_obj_path), timeout=90.0)
+        res["components"] = [c.name for c in blueprint.components]
+        res["blueprint_path"] = str(output_obj_path.with_suffix(".json"))
+        return res
+
+    @registry.register(
         name="blender_run_python",
         description="Executes a Python script inside real Blender 4.5 to create, modify, or export 3D geometry.",
         effect_class=EffectClass.NON_IDEMPOTENT_WRITE,

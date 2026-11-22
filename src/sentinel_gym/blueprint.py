@@ -71,6 +71,10 @@ class SpatialBlueprint:
     components: list[SpatialComponent] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def materials(self) -> list[PBRMaterial]:
+        return [c.material for c in self.components if c.material]
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "assembly_name": self.assembly_name,

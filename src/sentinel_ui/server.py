@@ -273,7 +273,7 @@ def init_standard_agents():
             description="Synthesizes executive markdown reports and system health briefings.",
             author="Sentinel Biological Systems",
             capabilities=["analysis:markdown", "reporting:executive", "skill:compose"],
-            allowed_organs=["python_sandbox_run", "file_transform", "execute_skill", "skill_*", "broker_http_get", "system_filesystem_inspect", "system_process_inspect", "screen_capture"],
+            allowed_organs=["blender_progressive_lod_synthesize", "python_sandbox_run", "file_transform", "execute_skill", "skill_*", "broker_http_get", "system_filesystem_inspect", "system_process_inspect", "screen_capture"],
         ),
     ]
 
@@ -286,11 +286,11 @@ def init_standard_agents():
             except Exception:
                 pass
         else:
-            # Sync allowed_organs to include execute_skill, skill_*, broker_http_get, system_filesystem_inspect, system_process_inspect, screen_capture
+            # Sync allowed_organs to include execute_skill, skill_*, broker_http_get, system_filesystem_inspect, system_process_inspect, screen_capture, blender_progressive_lod_synthesize
             curr_manifest = json.loads(existing["manifest_json"])
             organs = curr_manifest.get("allowed_organs", [])
             updated = False
-            for req_org in ["execute_skill", "skill_*", "broker_http_get", "system_filesystem_inspect", "system_process_inspect", "screen_capture"]:
+            for req_org in ["blender_progressive_lod_synthesize", "execute_skill", "skill_*", "broker_http_get", "system_filesystem_inspect", "system_process_inspect", "screen_capture"]:
                 if req_org not in organs:
                     organs.append(req_org)
                     updated = True
@@ -1731,6 +1731,17 @@ def run_agent_react(req: AgentReActRequest):
         task_id = f"react_{int(time.time())}"
         state_machine.create_task(task_id, title=req.goal, max_attempts=1)
         task, lease_rec = state_machine.start_next_attempt(task_id)
+
+        # Intelligent agent routing if auto or unset
+        effective_agent = req.agent_id
+        if not effective_agent or effective_agent == "auto":
+            lower_goal = req.goal.lower()
+            words_3d = ["3d", "blender", "model", "sword", "bench", "standoff", "plate", "gear", "mesh", "turret", "bearing", "valve", "motor", "cylinder", "cube", "obj"]
+            if any(w in lower_goal for w in words_3d):
+                effective_agent = "blender_artisan"
+            else:
+                effective_agent = "systems_reporter"
+
         gw = LLMGateway(endpoint=config.llm.endpoint, default_model=req.model or config.llm.model)
         react_ctrl = ReActController(broker=broker, llm_gateway=gw, max_turns=req.max_turns)
         out_art = workspaces_dir / f"{task_id}.md"
@@ -1739,7 +1750,7 @@ def run_agent_react(req: AgentReActRequest):
             attempt_id=lease_rec.attempt_id,
             lease_token=lease_rec.lease_token,
             goal=req.goal,
-            agent_id=req.agent_id,
+            agent_id=effective_agent,
             output_artifact_path=str(out_art),
             model=req.model or config.llm.model,
         )
